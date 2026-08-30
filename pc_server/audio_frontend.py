@@ -162,4 +162,3 @@ def process_pcm(pcm: bytes, sample_rate: int, tuning: MicTuning) -> tuple[bytes,
         **vad_stats,
     }
     return _list_to_pcm16(output), stats
-

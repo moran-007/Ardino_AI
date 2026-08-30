@@ -29,4 +29,3 @@
 2. 新建 ESP-IDF 实验工程，只验证 INMP441 -> AFE AGC/NS/VAD -> USB PCM，不接 AI API、不覆盖当前固件。
 3. 加入 WakeNet 和少量 MultiNet 中文命令，验证误唤醒率和命令准确率。
 4. 最后将 VAD 后的语音片段接回电脑 ASR/DeepSeek；只有固定控制命令完全在 ESP32 本地执行。
-
