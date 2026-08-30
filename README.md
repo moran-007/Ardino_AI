@@ -11,6 +11,74 @@
 
 电脑服务启动成功会显示 `DeepSeek API: configured`。之后按住 ESP32 的 BOOT 说话，松开即可。API Key、模型和系统提示词只属于电脑；Wi-Fi、电脑服务地址和音量只属于 ESP32。
 
+## 本地服务完整启动与检查
+
+以下命令都从项目根目录执行。第一次使用或更新 Python 依赖后，先运行完整环境检查：
+
+```powershell
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\pc_server\setup_server.ps1
+```
+
+该脚本会检查 Python 3.11 虚拟环境、安装或确认依赖、下载或确认 Zipformer 模型，运行 5 项自动测试，并实际加载模型。最终出现下面这行才算准备完成：
+
+```text
+LAN server environment check passed.
+```
+
+如果还没有本地配置，或需要修改 DeepSeek Key、模型、端口、提示词和音色，再运行：
+
+```powershell
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\pc_server\configure_server.ps1
+```
+
+日常启动可以双击 `pc_server\start_server.cmd`，也可以在项目根目录执行：
+
+```powershell
+.\pc_server\start_server.cmd
+```
+
+模型加载需要数秒。服务窗口必须保持运行；看到局域网地址、`UDP discovery port: 8764` 和 `DeepSeek API: configured` 后，可在另一个 PowerShell 窗口检查：
+
+```powershell
+Invoke-RestMethod http://127.0.0.1:8765/health
+```
+
+正常结果中应包含：
+
+```json
+{
+  "ok": true,
+  "service": "esp32-lan-dialogue",
+  "asr": "zipformer-ctc-zh-int8-2025-07-03",
+  "api_configured": true
+}
+```
+
+查看电脑当前实际联网网卡和局域网 IPv4：
+
+```powershell
+Get-NetIPConfiguration |
+  Where-Object { $_.IPv4DefaultGateway -and $_.NetAdapter.Status -eq "Up" } |
+  Select-Object InterfaceAlias, @{Name="IPv4"; Expression={$_.IPv4Address.IPAddress}}
+```
+
+忽略虚拟网卡，选择 WLAN 或以太网地址。手机或同一局域网中的其他电脑可访问：
+
+```text
+http://电脑的局域网IPv4:8765/health
+```
+
+本项目在 2026-08-30 完整实测了以下启动条件：5 项自动测试通过、真实 Zipformer 模型加载成功、TCP 8765 与 UDP 8764 正常监听、局域网健康接口返回 200、手机页面返回 200、UDP 自动发现返回 `ESP32_AI_SERVER_V1 8765`。检查过程未回显 API Key。
+
+停止服务时，在 `start_server.cmd` 窗口按 `Ctrl+C`，确认后关闭窗口。不要重复启动多个实例；若提示端口已占用，可查找当前监听进程：
+
+```powershell
+Get-NetTCPConnection -State Listen -LocalPort 8765 |
+  Select-Object LocalAddress, LocalPort, OwningProcess
+```
+
+若本机健康检查成功、但手机或 ESP32 无法访问，请确认三台设备在同一局域网，并允许 Windows 防火墙在“专用网络”上接收 TCP 8765 和 UDP 8764。不要把这两个端口直接映射到公网。
+
 ## 文件位置
 
 - ESP32 Arduino 主程序：`esp32_lan_device\esp32_lan_device.ino`
@@ -21,6 +89,7 @@
 - 电脑本地秘密配置：`pc_server\server_config.local.json`（不要分享）
 - ESP32 编译脚本：`build_esp32.ps1`
 - 云服务器部署调研：`docs\CLOUD_DEPLOYMENT_ROADMAP.md`（仅路线文档，云服务代码尚未实现）
+- 低成本 HTTP 云端执行流程：`docs\LOW_COST_HTTP_CLOUD_EXECUTION_FLOW.md`（按阶段实施、验收和回滚）
 
 以后添加云服务器实现时，建议新建顶层 `cloud_server\`，不要把云端依赖和 Windows 局域网服务混入同一个运行环境。
 
