@@ -1,0 +1,36 @@
+# Local secrets and machine-specific configuration
+**/server_config.local.json
+**/secrets.h
+.env
+.env.*
+!.env.example
+
+# Python environments and caches
+**/.venv/
+**/__pycache__/
+**/*.py[cod]
+
+# Downloaded ASR models and runtime data
+pc_server/models/
+pc_server/jobs/
+pc_server/recordings/
+mic_tuning.json
+
+# Arduino build outputs
+build*/
+**/build/
+*.bin
+*.elf
+*.map
+
+# Test and browser artifacts
+.playwright-cli/
+output/
+*.log
+
+# Editor and OS metadata
+.vscode/
+.idea/
+esp32_lan_device/.theia/
+.DS_Store
+Thumbs.db
