@@ -1,10 +1,12 @@
-# Ardino_AI · ESP32-S3 局域网独立语音对话
+# Ardino_AI · ESP32-S3 局域网与公网语音对话
 
-这是项目当前唯一保留的可运行版本。运行时 ESP32-S3 不依赖串口传输：按住 BOOT 录音，松开后通过 Wi-Fi 把 16 kHz PCM 发送给电脑；电脑离线识别、调用 DeepSeek、用 Windows 本地语音合成；ESP32 边下载边通过 MAX98357A 播放。串口只保留调试用途，启动后可以拔掉。
+项目保留两套互不覆盖的固件：`esp32_lan_device/` 是已部署的局域网稳定版，配合 Windows `pc_server/`；`esp32_cloud_device/` 是整合后的公网最新版，配合 `cloud_server/`。两套固件接线一致，但网络协议、BLE UUID 和 NVS 配置不同，烧录时必须选对目录。
+
+局域网版运行时 ESP32-S3 不依赖串口传输：按住 BOOT 录音，松开后通过 Wi-Fi 把 16 kHz PCM 发送给电脑；电脑离线识别、调用 DeepSeek、用 Windows 本地语音合成；ESP32 边下载边通过 MAX98357A 播放。公网版把 ASR、LLM 和分段 TTS 交给云端服务，并在设备网页显示实时流程、当前对话和本地历史记录。
 
 手机连接同一个 Wi-Fi 后，访问 `http://ESP32的IP/` 可查看最近四轮识别文本和 AI 完整回答。ESP32 只提供轻量入口，正文由电脑服务端直接送到手机浏览器，不占用 ESP32 内存；网页每 1.5 秒自动刷新，也可清除当前设备的对话历史。展开“AI 预设与配置”可切换 DeepSeek V4 Flash/Pro、最大输出、思考模式、系统提示词和 Windows TTS 声音，也可替换 API Key；已有 Key 从不回显。API 地址固定为 DeepSeek 官方端点，避免密钥被发送到其他服务器。
 
-## 每次开机只做这两件事
+## 局域网版每次开机只做这两件事
 
 1. 给 ESP32 和功放接通外部电源。ESP32 会自动连接已保存 Wi-Fi，并自动寻找电脑服务；不需要 USB 数据线，也不需要打开串口监视器。
 2. 在电脑双击 `pc_server\start_server.cmd`，保持窗口运行。手机与 ESP32 需和电脑位于同一局域网。
@@ -227,29 +229,35 @@ Remove-NetFirewallRule -DisplayName "Ardino_AI LAN UDP 8764"
 
 ## 文件位置
 
-- ESP32 Arduino 主程序：`esp32_lan_device\esp32_lan_device.ino`
-- ESP32 音频驱动：`esp32_lan_device\voice_input.cpp`、`voice_input.h`
+- 局域网 ESP32 主程序：`esp32_lan_device\esp32_lan_device.ino`
+- 公网 ESP32 主程序：`esp32_cloud_device\esp32_cloud_device.ino`
+- 两套音频驱动：各固件目录内的 `voice_input.cpp`、`voice_input.h`（云端版增加 I2S/DMA 释放与恢复，不要混用）
 - 电脑服务：`pc_server\lan_dialogue_server.py`
 - 电脑首次配置：`pc_server\configure_server.ps1`
 - 电脑日常启动：`pc_server\start_server.cmd`
 - 电脑本地秘密配置：`pc_server\server_config.local.json`（不要分享）
 - ESP32 编译脚本：`build_esp32.ps1`
-- 云服务器部署调研：`docs\CLOUD_DEPLOYMENT_ROADMAP.md`（仅路线文档，云服务代码尚未实现）
+- 云服务器部署调研：`docs\CLOUD_DEPLOYMENT_ROADMAP.md`（早期路线与服务器现状记录）
 - 低成本 HTTP 云端执行流程：`docs\LOW_COST_HTTP_CLOUD_EXECUTION_FLOW.md`（按阶段实施、验收和回滚）
+- 云端服务与电脑模拟：`cloud_server\README.md`（已实现，默认 mock 测试不产生 API 费用）
+- ESP32 公网固件说明：`esp32_cloud_device\README.md`（候选 1/2/3 已整合为此唯一目录）
 
-以后添加云服务器实现时，建议新建顶层 `cloud_server\`，不要把云端依赖和 Windows 局域网服务混入同一个运行环境。
+云端依赖和 Windows 局域网服务保持独立运行环境；本地密钥、模型、数据库和生成音频由 `.gitignore` 排除，不上传 GitHub。
 
 ## 架构与边界
 
 ```text
 INMP441 -> ESP32-S3 --局域网--> Windows：Zipformer ASR -> DeepSeek -> Windows TTS
 MAX98357A <- ESP32-S3 <--流式 PCM-- Windows
+
+INMP441 -> ESP32-S3 --HTTP/HTTPS--> cloud_server：ASR -> LLM 主备 -> 分段 TTS
+MAX98357A <- ESP32-S3 <--按句 PCM 分段-- cloud_server
 ```
 
 - 语音识别和语音合成都在电脑离线执行；只有文字问题会发给 DeepSeek。
 - 回答 PCM 不整段放入 ESP32 内存或闪存，而是直接流式播放，因此长度主要受 API 上限、电脑磁盘和 TTS 时间限制。
 - `max_tokens` 可配置为 128..384000，默认 4096。设置越大，费用、等待时间和生成失败风险越高。
-- 当前实现面向可信家庭局域网。若要部署到公网服务器，必须再加入 HTTPS、鉴权、限流和安全的密钥管理。
+- 局域网版面向可信家庭网络；公网版已实现设备 Token、资源隔离、限流和 HTTPS 探测，但长期使用前仍应确认 Nginx 全链路 HTTPS，不要长期依赖 HTTP 回退。
 - ESP32-S3 上的 ESP-SR 适合唤醒词和有限命令，不适合代替本方案的任意中文连续听写。
 
 ## 接线
@@ -301,7 +309,7 @@ Windows 防火墙需允许专用网络上的 TCP 8765 与 UDP 8764。随后双�
 | HTTP 端口 | 电脑，默认 8765 | `configure_server.ps1` |
 | UDP 自动发现端口 | 电脑，默认 8764 | `configure_server.ps1`；须与 ESP32 一致 |
 
-## ESP32 配置命令速查
+## 局域网 ESP32 配置命令速查
 
 ### 打开串口控制台
 
@@ -432,7 +440,49 @@ ESP32 端配置内容如下：
 - 网页能开但 AI 不回答：确认电脑 `start_server.cmd` 仍在运行且防火墙允许专用网络。
 - BLE 断开：ESP32 会立即重新广播，可再次连接；BLE 不会因完成一次配置而关闭。
 
-## 脱离 USB 数据线供电
+## 云端 ESP32 配置命令速查
+
+云端固件的设备名形如 `ESP32-CLOUD-xxxx`，6 位配对 PIN 只在串口输出。若设备 NVS 中已有局域网版 Wi-Fi，首次启动会迁移 Wi-Fi 和音量；否则使用 BLE 完成首次配置。联网后也可打开串口打印的 `http://ESP32的局域网IP/`，填写同一个 PIN 后保存服务器、设备凭证、音色、语速和音量。
+
+### 云端 BLE UUID
+
+| 类型 | UUID | 操作 |
+| --- | --- | --- |
+| 服务 | `7b210001-4184-4ea4-a359-856aee830000` | 云端配置服务 |
+| 配置 | `7b210002-4184-4ea4-a359-856aee830000` | 加密读/写 UTF-8 JSON |
+| 命令 | `7b210003-4184-4ea4-a359-856aee830000` | 加密写 UTF-8 文本命令 |
+| 状态 | `7b210004-4184-4ea4-a359-856aee830000` | 加密读/Notify；Token 不回显 |
+
+向配置特征写入的完整示例：
+
+```json
+{"ssid":"家庭Wi-Fi","wifi_password":"无线密码","server_url":"https://voice.bsnlch.xyz","device_id":"esp32-01","device_token":"注册设备时仅显示一次的Token","chinese_speaker_id":2,"english_speaker_id":128,"speech_speed":0.9,"volume_percent":50,"volume_mode":"fixed","connect":true}
+```
+
+支持字段：`ssid`、`wifi_password`、`server_url`、`device_id`、`device_token`、`chinese_speaker_id`（0..4）、`english_speaker_id`（0..903）、`speech_speed`（0.5..2.0）、`volume_percent`（0..100）、`volume_mode`（`fixed`/`pot`）和 `connect`。总 JSON 不得超过 768 bytes，建议使用 BLE Long Write。
+
+云端 BLE 命令特征接受：
+
+```text
+status
+connect
+sync_voice
+reboot
+```
+
+云端串口命令接受：
+
+```text
+/status
+/voice
+/connect
+/sync_voice
+/reboot
+```
+
+`sync_voice` 会使用设备 Token 把中英文音色与语速同步到服务器。需要预置首次烧录凭证时，可在本机创建 `esp32_cloud_device/secrets.h`，定义 `CLOUD_PROVISIONED_DEVICE_ID` 和 `CLOUD_PROVISIONED_DEVICE_TOKEN`；该文件已被 Git 忽略，不能上传或分享。
+
+## 局域网版脱离 USB 数据线供电
 
 固件不依赖 COM4 或串口数据。拔掉电脑 USB 数据线前，必须给 ESP32 提供独立电源：最稳妥是使用 5V、建议 2A 以上的 USB 充电器/充电宝连接开发板供电口；功放使用稳定 5V，并与 ESP32、麦克风共地。不要把 5V 接入 3V3 引脚，也不要在不确定开发板电源路径时同时从两个 5V 源反向供电。
 
@@ -440,28 +490,37 @@ ESP32 端配置内容如下：
 
 ## ESP32 编译与运行
 
-只编译、不烧录：
+构建脚本默认编译局域网版；用 `-Target cloud` 选择公网版。两条命令都只编译、不烧录：
 
 ```powershell
 .\build_esp32.ps1
+.\build_esp32.ps1 -Target cloud
 ```
 
-确认 COM4 没有被 Arduino 串口监视器或旧语音桥占用后，才可手动上传：
+确认 COM4 没有被 Arduino 串口监视器占用后，按需要手动上传其中一套固件：
 
 ```powershell
+# 局域网稳定版
 arduino-cli upload --fqbn "esp32:esp32:esp32s3:USBMode=hwcdc,CDCOnBoot=cdc,FlashSize=16M,PartitionScheme=huge_app,PSRAM=opi" -p COM4 .\esp32_lan_device
+
+# 公网最新版
+arduino-cli upload --fqbn "esp32:esp32:esp32s3:USBMode=hwcdc,CDCOnBoot=cdc,FlashSize=16M,PartitionScheme=huge_app,PSRAM=opi" -p COM4 .\esp32_cloud_device
 ```
 
-烧录后按复位键。蓝灯表示待机；按住 BOOT 说话时为红灯，松开后变为黄灯处理，绿色表示播放。播放或等待期间按 BOOT 可中止本轮设备端等待/播放。串口状态会打印手机网页地址，例如 `http://192.168.x.x/`。
+烧录后按复位键。两套固件均使用蓝灯待机、红灯录音、黄灯处理、绿灯播放；公网版错误状态为紫红色。播放或等待期间按 BOOT 可中止本轮设备端等待/播放。串口会打印设备网页地址，例如 `http://192.168.x.x/`。
 
-可选调试命令：`/status`、`/discover`、`/server [URL]`、`/volume 0..100|pot|fixed`、`/voice`、`/connect`、`/reboot`。
+局域网版和公网版的 BLE UUID、JSON 字段与串口命令不同，分别使用上面的两节速查表。
 
 ## 验证
 
 电脑端自动测试：
 
 ```powershell
+# 局域网 Windows 服务
 .\pc_server\.venv\Scripts\python.exe -B -m unittest discover -s .\pc_server -p "test_*.py" -v
+
+# 公网服务、设备鉴权和分段协议（mock，不调用付费 API）
+.\pc_server\.venv\Scripts\python.exe -B -m unittest discover -s .\cloud_server\tests -p "test_*.py" -v
 ```
 
-这些测试不会调用真实 DeepSeek，也不会播放声音；它们验证音频前处理、配置边界、PCM/WAV 转换、设备令牌、异步任务状态和回答音频下载。最终硬件验收仍需接回功放并在外部稳定电源下实测一次完整按键对话。
+这些测试不会调用真实 DeepSeek，也不会播放声音；它们验证音频前处理、配置边界、PCM/WAV 转换、设备令牌、资源隔离、异步任务状态、句级分段和回答音频下载。最终硬件验收仍需接回功放并在外部稳定电源下分别实测需要使用的固件。

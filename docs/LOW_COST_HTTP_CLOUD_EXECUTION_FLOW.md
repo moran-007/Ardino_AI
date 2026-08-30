@@ -16,7 +16,7 @@
 - 不破坏服务器上已经运行的考试、课程、3D 拼豆等项目；
 - 第一阶段验证通过后，使用免费证书升级到 HTTPS。
 
-本文档是执行说明，不代表相关云服务代码已经实现，也不自动修改服务器。
+本文档既是执行说明，也记录当前实现状态；`cloud_server/` 已在本地完成第一版并通过电脑模拟测试，但本文档本身不会自动修改线上服务器。
 
 ## 2. 当前已确认状态
 
@@ -718,11 +718,11 @@ ASR/LLM/TTS 各阶段耗时
 执行代码实现前，只需确定以下项目：
 
 ```text
-是否新增 voice.bsnlch.xyz：建议是
-第一家 LLM：建议 DeepSeek
-备用 LLM：建议通义千问或 GLM
+是否新增 voice.bsnlch.xyz：已完成 DNS A 记录
+第一家 LLM：已确定 DeepSeek
+备用 LLM：已确定优先通义千问，GLM 保留为第三 Provider
 第一版 ASR：建议 SenseVoice INT8 压测
-第一版 TTS：建议轻量 sherpa-onnx VITS 压测
+第一版 TTS：已确定轻量 sherpa-onnx VITS 压测
 翻译：建议先使用 LLM 翻译
 允许并发：1
 录音最长：20 秒
@@ -730,4 +730,171 @@ ASR/LLM/TTS 各阶段耗时
 HTTP 联调期限：不超过 72 小时
 ```
 
-这些值确定后，下一阶段才进入 `cloud_server` 代码实现和服务器部署。
+仍需完成 Nginx 专用站点、ASR 选择和 TTS 模型许可证核对，之后进入 `cloud_server` 代码实现和服务器部署。
+
+## 16. 已确认决策记录
+
+2026-08-30 已确认：
+
+- DNS：`voice.bsnlch.xyz` A 记录已指向当前 ECS，TTL 为 10 分钟；公网解析已验证生效。
+- 当前 HTTP：访问 `http://voice.bsnlch.xyz/` 返回现有 Nginx 默认页面，说明 DNS 已完成，但语音服务专用 Nginx `server_name` 和 `/voice-api/` 路由尚未部署。
+- 主 LLM：DeepSeek。
+- 备用 LLM：优先通义千问。两者都不可用时，GLM 可作为第三 Provider，而不是第一版同时启用三家。
+- 第一版 TTS：轻量 sherpa-onnx VITS。
+- 音频输出：第一版采用按句分段流式播放；完成稳定性验证后再增加真正的回调式连续流。
+
+选择通义千问作为第一备用的原因：服务器已经位于阿里云，后续账户权限、用量监控和其他阿里云语音服务可以集中管理；Provider 接口仍保持厂商无关，不能把通义专有字段扩散到业务层。
+
+## 17. 流式语音输出方案
+
+### 17.1 三种“流式”必须区分
+
+| 类型 | 说明 | 当前代码状态 | 首次播放延迟 |
+| --- | --- | --- | --- |
+| 文件流式下载 | 完整回答和完整 TTS 都完成后，ESP32 边下载 PCM 文件边播放 | 已实现 | 较高 |
+| 按句分段流式 | LLM 每形成一句就合成一个 PCM 段，ESP32 按顺序下载和播放 | 第一版推荐新增 | 中低 |
+| 真正连续流式 | TTS 生成回调每产生一批 samples 就立即经 HTTP chunk/WebSocket 发给 ESP32 | 技术可行，但需改协议和 ESP32 播放器 | 最低 |
+
+当前局域网代码属于第一种：服务器等待完整 LLM 回答，完成整段 TTS 并写出 `answer.pcm` 后，才把任务标记为 `done`；ESP32 的 `playPcmStream()` 虽然边下载边写入 I2S，但要求服务端先给出已知 `Content-Length`。因此它是“播放传输流式”，不是“边合成边播放”。
+
+### 17.2 sherpa-onnx VITS 是否支持生成时取出音频
+
+可行。项目当前安装的 sherpa-onnx 1.13.6 Python API 的 `OfflineTts.generate()` 支持：
+
+```python
+generate(text, sid=0, speed=1.0, callback=callback)
+```
+
+回调签名为：
+
+```python
+callback(samples: numpy.ndarray, progress: float) -> int
+```
+
+合成过程中可以持续取得 float32 音频 samples；回调返回非零还可以提前终止生成。“OfflineTts”中的 offline 表示模型在本地离线运行，并不代表必须等整段音频完成后才能通过回调取得样本。
+
+接口依据：[sherpa-onnx `OfflineTts` callback 实现](https://github.com/k2-fsa/sherpa-onnx/blob/master/sherpa-onnx/jni/offline-tts.cc)。候选中文 VITS 模型及文件大小应以 [sherpa-onnx VITS 官方模型页](https://k2-fsa.github.io/sherpa/onnx/tts/pretrained_models/vits.html)为准，并在下载后单独核对模型目录中的许可证。
+
+### 17.3 第一版推荐：按句分段流式
+
+第一版不直接使用无长度 HTTP chunk，而采用兼容现有 ESP32 播放逻辑的分段协议：
+
+```text
+DeepSeek 流式 tokens
+ -> 文本缓冲器识别 。！？!?；\n 等句子边界
+ -> 形成 15～80 个汉字的安全片段
+ -> VITS 合成该片段
+ -> 状态化重采样到 16 kHz
+ -> 转成 s16le mono PCM
+ -> 保存 segment-0001.pcm，并记录准确字节数
+ -> ESP32 下载并立即播放
+ -> 同时继续生成下一片段
+```
+
+建议新增接口：
+
+```http
+GET /voice-api/v1/jobs/{job_id}/segments?after=0
+```
+
+响应示例：
+
+```json
+{
+  "status": "streaming",
+  "segments": [
+    {
+      "index": 1,
+      "bytes": 48320,
+      "audio_path": "/voice-api/v1/jobs/JOB/segments/1/audio"
+    }
+  ],
+  "final": false
+}
+```
+
+ESP32 逐段下载时每一段都有明确 `Content-Length`，可以继续使用当前 `playPcmStream(stream, byteCount)`。段间建议在服务端音频结尾加入 20～50 ms 静音，ESP32 不要在每段之间关闭再重开 I2S，以减少爆音和明显停顿。
+
+第一片不要太短，否则会出现语气不自然、数字被拆开、缩写误读；也不要等完整段落，否则失去降低延迟的意义。初始规则建议：
+
+- 遇到强句号 `。！？!?` 优先切分；
+- 逗号只在累计超过 40 个汉字后切分；
+- 片段最短约 15 个汉字；
+- 片段最长约 80 个汉字；
+- Markdown 代码块、URL 和表格先转为适合朗读的文字；
+- 最后一段在 LLM 完成时强制提交。
+
+### 17.4 第二版：真正连续流式
+
+完成按句分段稳定性验证后，可以增加：
+
+```http
+GET /voice-api/v1/jobs/{job_id}/audio-stream
+Transfer-Encoding: chunked
+Content-Type: application/octet-stream
+```
+
+服务端流程：
+
+```text
+VITS callback float32 samples
+ -> 有状态流式重采样器
+ -> float32 限幅
+ -> int16 little-endian
+ -> 有界队列
+ -> FastAPI StreamingResponse
+ -> Nginx proxy_buffering off
+ -> ESP32 环形缓冲
+ -> I2S
+```
+
+关键实现要求：
+
+- 不能对每个 callback chunk 独立做无状态重采样，否则块边界会出现不连续或爆音；
+- 服务端队列必须有上限，ESP32 下载慢时施加背压，不能无限占内存；
+- ESP32 新增未知总长度的播放器，以 EOF/结束帧而不是 `byteCount` 判断结束；
+- 开始播放前先缓存约 200～500 ms 音频，抵抗公网抖动；
+- Nginx 对该接口设置 `proxy_buffering off`，否则会失去实时性；
+- 用户按 BOOT 取消时关闭连接，服务端让 callback 返回非零，停止浪费 CPU；
+- 发生中途错误时发送明确结束状态，不能让设备永久等待；
+- HTTP 版本只能用于短期联调，真实流式音频和设备 Token 正式使用前必须切换 HTTPS。
+
+如果 HTTP chunk 在 Arduino `HTTPClient` 上的兼容性测试不理想，可改用 WebSocket 二进制帧。WebSocket framing 更明确，也更适合携带 `audio_start`、`audio_chunk`、`audio_end`、`error` 和 `cancel` 事件，但固件和服务端复杂度更高。
+
+### 17.5 流式方案实施顺序
+
+1. 保留当前完整文件模式作为回退。
+2. 实现 DeepSeek 流式文本和安全分句器。
+3. 实现分段 TTS、segment 状态和逐段下载。
+4. ESP32 连续播放多个已知长度 PCM 段，验证无爆音、无乱序。
+5. 测量第一字音频延迟、段间空隙、总耗时和服务器峰值内存。
+6. 分段模式稳定后，再实现 sherpa callback + StreamingResponse。
+7. 切换 HTTPS 后才允许真实设备长期使用连续流。
+
+### 17.6 流式验收指标
+
+- 第一段播放开始时间明显早于完整回答完成时间；
+- segment 严格递增，重试不会重复播放；
+- 段间无明显爆音，普通句子停顿可接受；
+- 2 秒网络抖动不会立即断音或崩溃；
+- ESP32 播放缓冲不随回答长度增长；
+- 服务端队列和内存有固定上限；
+- 用户取消后 1 秒内停止 TTS 和网络传输；
+- 完整文件回退路径始终可用。
+
+## 18. 当前本地实现状态（2026-08-30）
+
+已在独立的 `cloud_server/` 完成第一版云端代码，并保持现有 `pc_server/` 局域网稳定版不变：
+
+- `/voice-api/v1/dialogue`、任务状态、句级 PCM 分段和完整音频回退接口；
+- DeepSeek 主用、通义千问第一备用、GLM 第二备用的 OpenAI 兼容 Provider；
+- SenseVoice ASR、sherpa-onnx VITS TTS、统一 16 kHz PCM 输出；
+- 每设备独立 Token、HMAC 摘要存储、资源隔离、限流和上传大小限制；
+- `/voice-api/v1/translate` 文字翻译接口；
+- 无费用 mock 模型、电脑 ESP32 协议模拟器和自动测试；
+- `voice.bsnlch.xyz` 的 HTTP Nginx 配置与 systemd 单 worker 配置；
+- 独立 `esp32_cloud_device/` 公网固件，支持 BLE 写入设备凭证和逐段播放。
+
+本机端到端 mock 验收已实际启动 HTTP 服务，由电脑模拟器完成上传、轮询和 3 段音频下载，最终生成 WAV；没有调用真实厂商 API。ESP32 公网固件按当前阶段要求没有编译、烧录或硬件测试。
+
+2026-08-30 已将服务部署到 ECS：代码位于 `/opt/esp32-voice/current`，systemd 服务为 `voice-gateway.service`，只监听 `127.0.0.1:18765`，Nginx 通过 `voice.bsnlch.xyz` 提供 HTTP。SenseVoice INT8 与中文 5-speaker VITS 均从本地电脑上传并在 ECS 真实加载验证；管理员配置页为 `http://voice.bsnlch.xyz/admin/`。尚未填写 LLM API Key，因此健康接口会明确返回“已启用的 LLM 尚未配置 API Key”，填写任一已启用厂商 Key 后才进入完整对话就绪状态。

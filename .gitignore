@@ -14,6 +14,9 @@
 pc_server/models/
 pc_server/jobs/
 pc_server/recordings/
+cloud_server/data/
+cloud_server/output/
+cloud_server/models/
 mic_tuning.json
 
 # Arduino build outputs
@@ -31,6 +34,6 @@ output/
 # Editor and OS metadata
 .vscode/
 .idea/
-esp32_lan_device/.theia/
+**/.theia/
 .DS_Store
 Thumbs.db

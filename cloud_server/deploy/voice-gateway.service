@@ -1,0 +1,23 @@
+[Unit]
+Description=ESP32 Cloud Voice Gateway
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=voice-gateway
+Group=voice-gateway
+WorkingDirectory=/opt/esp32-voice/current
+EnvironmentFile=/etc/esp32-voice/voice.env
+ExecStart=/opt/esp32-voice/.venv/bin/python -m uvicorn cloud_server.app:app --host 127.0.0.1 --port 18765 --workers 1
+Restart=on-failure
+RestartSec=5
+TimeoutStopSec=20
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/esp32-voice
+
+[Install]
+WantedBy=multi-user.target
