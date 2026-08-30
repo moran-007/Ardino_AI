@@ -79,6 +79,152 @@ Get-NetTCPConnection -State Listen -LocalPort 8765 |
 
 若本机健康检查成功、但手机或 ESP32 无法访问，请确认三台设备在同一局域网，并允许 Windows 防火墙在“专用网络”上接收 TCP 8765 和 UDP 8764。不要把这两个端口直接映射到公网。
 
+## 本地服务命令速查
+
+以下命令都在项目根目录的 PowerShell 中执行。
+
+### 首次准备或依赖更新
+
+```powershell
+# 创建/更新虚拟环境、安装依赖、确认模型、运行测试并加载模型
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\pc_server\setup_server.ps1
+
+# 首次写入配置，或修改 Key、模型、端口、提示词与音色
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\pc_server\configure_server.ps1
+```
+
+### 启动服务
+
+```powershell
+# 推荐：前台启动，窗口中可以直接查看日志，按 Ctrl+C 停止
+.\pc_server\start_server.cmd
+```
+
+不要在服务已经监听 8765 时重复启动。
+
+### 查看健康状态与脱敏配置
+
+```powershell
+# 本机健康检查
+Invoke-RestMethod http://127.0.0.1:8765/health
+
+# 只返回脱敏后的公开配置；API Key 只显示 configured 或 missing
+Invoke-RestMethod http://127.0.0.1:8765/config/public
+```
+
+### 查看局域网 IP
+
+```powershell
+Get-NetIPConfiguration |
+  Where-Object { $_.IPv4DefaultGateway -and $_.NetAdapter.Status -eq "Up" } |
+  Select-Object InterfaceAlias, @{Name="IPv4"; Expression={$_.IPv4Address.IPAddress}}
+```
+
+选择实际联网的 WLAN 或以太网地址，然后从同一局域网的手机或电脑检查：
+
+```powershell
+Invoke-RestMethod http://电脑的局域网IPv4:8765/health
+```
+
+### 查看端口和服务进程
+
+```powershell
+# TCP 服务端口
+Get-NetTCPConnection -State Listen -LocalPort 8765 |
+  Select-Object LocalAddress, LocalPort, OwningProcess
+
+# UDP 自动发现端口
+Get-NetUDPEndpoint -LocalPort 8764 |
+  Select-Object LocalAddress, LocalPort, OwningProcess
+
+# 查看占用 TCP 8765 的进程
+$serverProcessId = (Get-NetTCPConnection -State Listen -LocalPort 8765).OwningProcess
+Get-Process -Id $serverProcessId
+```
+
+### 手动验证 UDP 自动发现
+
+```powershell
+$discoveryClient = [Net.Sockets.UdpClient]::new()
+try {
+  $discoveryClient.Client.ReceiveTimeout = 3000
+  $discoveryClient.Connect("127.0.0.1", 8764)
+  $request = [Text.Encoding]::ASCII.GetBytes("ESP32_AI_DISCOVER_V1")
+  [void]$discoveryClient.Send($request, $request.Length)
+  $remote = [Net.IPEndPoint]::new([Net.IPAddress]::Any, 0)
+  $reply = $discoveryClient.Receive([ref]$remote)
+  [Text.Encoding]::ASCII.GetString($reply)
+}
+finally {
+  $discoveryClient.Dispose()
+}
+```
+
+正常回复：
+
+```text
+ESP32_AI_SERVER_V1 8765
+```
+
+### 运行测试和只检查环境
+
+```powershell
+# 运行全部 5 项自动测试；不会调用真实 DeepSeek，也不会播放声音
+.\pc_server\.venv\Scripts\python.exe -B -m unittest discover -s .\pc_server -p "test_*.py" -v
+
+# 检查 Python 依赖是否冲突
+.\pc_server\.venv\Scripts\python.exe -m pip check
+
+# 加载本地配置和真实 Zipformer 模型后退出，不启动端口
+.\pc_server\.venv\Scripts\python.exe -B .\pc_server\lan_dialogue_server.py --check
+```
+
+### 停止服务
+
+正常停止：回到 `start_server.cmd` 窗口按 `Ctrl+C`，输入 `Y` 确认后关闭窗口。
+
+只有服务在后台运行、窗口丢失或无法响应时，才根据监听端口停止进程：
+
+```powershell
+$listener = Get-NetTCPConnection -State Listen -LocalPort 8765 -ErrorAction SilentlyContinue
+if ($listener) {
+  Stop-Process -Id $listener.OwningProcess
+}
+```
+
+停止后确认 TCP 和 UDP 端口均已释放：
+
+```powershell
+Get-NetTCPConnection -State Listen -LocalPort 8765 -ErrorAction SilentlyContinue
+Get-NetUDPEndpoint -LocalPort 8764 -ErrorAction SilentlyContinue
+```
+
+### Windows 防火墙检查与专用网络放行
+
+先检查现有规则，不要重复创建：
+
+```powershell
+Get-NetFirewallRule -DisplayName "Ardino_AI LAN*" -ErrorAction SilentlyContinue |
+  Select-Object DisplayName, Enabled, Profile, Direction, Action
+```
+
+只有局域网设备无法访问、并确认是防火墙拦截时，才在“以管理员身份运行”的 PowerShell 中添加仅限专用网络的规则：
+
+```powershell
+New-NetFirewallRule -DisplayName "Ardino_AI LAN TCP 8765" `
+  -Direction Inbound -Action Allow -Profile Private -Protocol TCP -LocalPort 8765
+
+New-NetFirewallRule -DisplayName "Ardino_AI LAN UDP 8764" `
+  -Direction Inbound -Action Allow -Profile Private -Protocol UDP -LocalPort 8764
+```
+
+需要撤销这些规则时：
+
+```powershell
+Remove-NetFirewallRule -DisplayName "Ardino_AI LAN TCP 8765"
+Remove-NetFirewallRule -DisplayName "Ardino_AI LAN UDP 8764"
+```
+
 ## 文件位置
 
 - ESP32 Arduino 主程序：`esp32_lan_device\esp32_lan_device.ino`
@@ -155,7 +301,42 @@ Windows 防火墙需允许专用网络上的 TCP 8765 与 UDP 8764。随后双�
 | HTTP 端口 | 电脑，默认 8765 | `configure_server.ps1` |
 | UDP 自动发现端口 | 电脑，默认 8764 | `configure_server.ps1`；须与 ESP32 一致 |
 
-## ESP32 常驻 BLE 配置与断联恢复
+## ESP32 配置命令速查
+
+### 打开串口控制台
+
+先查看开发板端口：
+
+```powershell
+arduino-cli board list
+```
+
+将示例中的 `COM4` 换成实际端口，以 460800 波特率打开控制台：
+
+```powershell
+arduino-cli monitor -p COM4 --config baudrate=460800
+```
+
+输入命令后发送换行；按 `Ctrl+C` 退出串口监视器。串口仅用于调试，局域网运行时可以拔掉 USB 数据线。
+
+### ESP32 串口命令
+
+| 命令 | 作用 | 是否保存到 NVS |
+| --- | --- | --- |
+| `/status` | 显示 Wi-Fi、SSID、ESP32 IP、手机页面、电脑服务地址、发现端口、音量、I2S 引脚、BLE 名称和 PIN | 否 |
+| `/discover` | 立即通过 UDP 8764 自动发现电脑服务，并保存发现到的地址 | 是 |
+| `/server` | 显示当前电脑服务地址；空值表示自动发现 | 否 |
+| `/server http://192.168.3.9:8765` | 手动设置并保存电脑服务地址 | 是 |
+| `/volume 0..100` | 设置并保存固定音量百分比，同时关闭电位器模式 | 是 |
+| `/volume pot` | 启用并保存 GPIO1 电位器音量模式 | 是 |
+| `/volume fixed` | 关闭电位器模式，恢复已保存的固定音量 | 是 |
+| `/voice` | 从控制台触发一轮对话；按提示立即按住 BOOT 说话，松开结束 | 否 |
+| `/connect` | 使用已保存的 SSID 和密码重新连接 Wi-Fi | 否 |
+| `/reboot` | 立即重启 ESP32 | 否 |
+
+当前 LAN 固件没有串口 Wi-Fi 设置命令。更换 Wi-Fi 名称或密码时，必须使用下面的 BLE 配置特征。需要把固定电脑地址恢复为自动发现时，也应通过 BLE 写入空的 `server_url`。
+
+### ESP32 常驻 BLE 配置
 
 ESP32 启动后 BLE 一直保持广播，与 Wi-Fi 同时工作。设备名形如 `ESP32-LAN-AI-xxxx`。配对 PIN 会打印在首次烧录后的串口状态，也可在联网时访问 `http://ESP32的IP/info` 查看并记下。
 
@@ -167,13 +348,37 @@ ESP32 启动后 BLE 一直保持广播，与 Wi-Fi 同时工作。设备名形�
 4. 向配置特征 `6f7a0002-7f9e-4a0b-9a8b-51f60f6d1000` 写入 UTF-8 JSON。密码不会被读回。
 5. 向命令特征 `6f7a0003-7f9e-4a0b-9a8b-51f60f6d1000` 写入 UTF-8 文本 `status`、`connect`、`discover` 或 `reboot`。
 
-配置新 Wi-Fi（支持中文 SSID）：
+BLE 服务和特征速查：
+
+| 类型 | UUID | 操作 | 内容 |
+| --- | --- | --- | --- |
+| 服务 | `6f7a0001-7f9e-4a0b-9a8b-51f60f6d1000` | — | Ardino_AI 配置服务 |
+| 配置 | `6f7a0002-7f9e-4a0b-9a8b-51f60f6d1000` | 加密读/写 | 写入配置 JSON；读取时密码只返回是否已配置 |
+| 命令 | `6f7a0003-7f9e-4a0b-9a8b-51f60f6d1000` | 加密写 | UTF-8 文本命令 `status`、`connect`、`discover`、`reboot` |
+| 状态 | `6f7a0004-7f9e-4a0b-9a8b-51f60f6d1000` | 加密读/Notify | Wi-Fi、SSID、IP、RSSI、手机页面、服务地址、发现端口和状态消息 |
+
+配置 JSON 支持的字段：
+
+| 字段 | 类型 | 说明 |
+| --- | --- | --- |
+| `ssid` | 字符串 | Wi-Fi 名称，最长 32 bytes；UTF-8 中文通常每字 3 bytes |
+| `wifi_password` | 字符串 | Wi-Fi 密码，最长 63 bytes |
+| `server_url` | 字符串 | 电脑服务地址；留空启用 UDP 自动发现，手动地址必须以 `http://` 开头 |
+| `lan_server` | 字符串 | `server_url` 的兼容别名，新配置优先使用 `server_url` |
+| `discovery_port` | 整数 | UDP 自动发现端口，范围 1..65535，默认 8764 |
+| `volume_percent` | 整数 | 固定音量，超出范围时自动限制为 0..100，并切换到固定音量模式 |
+| `volume_mode` | 字符串 | `fixed` 或 `pot`；`pot` 使用 GPIO1 电位器 |
+| `connect` | 布尔值 | `true` 保存后立即连接；`false` 只保存；省略时默认为 `true` |
+
+配置 JSON 总长度不得超过 768 bytes。使用 BLE App 时优先选择 Long Write/长写入。
+
+一次配置 Wi-Fi、自动发现和固定音量：
 
 ```json
-{"ssid":"新的中文Wi-Fi","wifi_password":"新密码","connect":true}
+{"ssid":"新的中文Wi-Fi","wifi_password":"新密码","server_url":"","discovery_port":8764,"volume_percent":50,"volume_mode":"fixed","connect":true}
 ```
 
-电脑地址通常留空让 ESP32 自动发现：
+恢复电脑服务自动发现，不修改其他字段：
 
 ```json
 {"server_url":"","discovery_port":8764,"connect":true}
@@ -184,6 +389,29 @@ ESP32 启动后 BLE 一直保持广播，与 Wi-Fi 同时工作。设备名形�
 ```json
 {"server_url":"http://192.168.3.9:8765","connect":true}
 ```
+
+修改固定音量但暂不重连 Wi-Fi：
+
+```json
+{"volume_percent":35,"volume_mode":"fixed","connect":false}
+```
+
+启用 GPIO1 电位器音量：
+
+```json
+{"volume_mode":"pot","connect":false}
+```
+
+BLE 命令特征只接受纯文本，不是 JSON：
+
+```text
+status
+connect
+discover
+reboot
+```
+
+常见状态消息：`config_saved`、`connected`、`wifi_failed`、`server_discovered`、`server_not_found`、`invalid_json`、`invalid_config`、`invalid_discovery_port`、`invalid_volume_mode`、`save_failed`、`unknown_command`。
 
 ESP32 端配置内容如下：
 
