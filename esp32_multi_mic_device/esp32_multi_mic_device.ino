@@ -18,6 +18,7 @@ using SecureClient = WiFiClientSecure;
 #include "alarm_manager.h"
 #include "web_alarm_music.h"
 #include "music_player.h"
+#include "bounded_audio_download.h"
 #include "conversation_session.h"
 #include "firmware_update.h"
 #include "memo_manager.h"
@@ -3943,7 +3944,7 @@ bool loadAlarmMusic() {
   const bool selected = selectionCode == 200 && cloudHttp.getSize() > 0 && cloudHttp.getSize() <= 2048 &&
       !deserializeJson(selection, cloudHttp.getString());
   endCloudRequest();
-  if (!selected) return false;
+  if (!selected) { traceRuntime("alarm_selection_failed", "HTTP " + String(selectionCode)); return false; }
   const String id = selection["id"] | "";
   if (id.isEmpty() || id.length() > 80 || id.indexOf('/') >= 0) return false;
   if (!beginCloudRequest(requestBaseUrl() + "/voice-api/v1/alarm-music/" + id + "/pcm")) return false;
@@ -3951,19 +3952,13 @@ bool loadAlarmMusic() {
   const int code = cloudHttp.GET();
   const int count = cloudHttp.getSize();
   uint8_t *data = code == 200 && count > 0 ? MusicPlayer::prepare(count) : nullptr;
-  if (!data) { endCloudRequest(false); return false; }
+  if (!data) { traceRuntime("alarm_buffer_failed", "HTTP " + String(code) + ", bytes=" + String(count) + ", free_psram=" + String(ESP.getFreePsram())); endCloudRequest(false); return false; }
   Stream *input = cloudHttp.getStreamPtr();
   input->setTimeout(1500);
-  size_t received = 0;
-  const uint32_t deadline = millis() + 10000;
-  while (received < static_cast<size_t>(count) && static_cast<int32_t>(millis() - deadline) < 0 && !RobotControls::abortRequested()) {
-    const size_t wanted = min(size_t{4096}, static_cast<size_t>(count) - received);
-    const size_t read = input->readBytes(reinterpret_cast<char *>(data + received), wanted);
-    if (!read) break;
-    received += read; delay(0);
-  }
+  const size_t received = AudioDownload::readBounded(*input, data, static_cast<size_t>(count),
+      10000, []() { return RobotControls::abortRequested(); });
   endCloudRequest(received == static_cast<size_t>(count));
-  if (received != static_cast<size_t>(count)) { MusicPlayer::stop(); return false; }
+  if (received != static_cast<size_t>(count)) { traceRuntime("alarm_download_failed", String(received) + "/" + String(count)); MusicPlayer::stop(); return false; }
   MusicPlayer::loaded(selection["title"] | id);
   return true;
 }

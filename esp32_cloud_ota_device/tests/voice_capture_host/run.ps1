@@ -20,6 +20,12 @@ if ($LASTEXITCODE -ne 0) { throw 'Capture host test compilation failed.' }
 $previousPath = $env:PATH
 try {
     $env:PATH = (Split-Path -Parent $Gxx) + ';' + $previousPath
+    $downloadExecutable = Join-Path $outputPath 'test_download.exe'
+    & $Gxx '-std=c++17' '-O1' '-Wall' '-Wextra' "-I$PSScriptRoot" "-I$sketchPath" `
+        (Join-Path $PSScriptRoot 'test_download.cpp') '-o' $downloadExecutable
+    if ($LASTEXITCODE -ne 0) { throw 'Audio download host compilation failed.' }
+    & $downloadExecutable
+    if ($LASTEXITCODE -ne 0) { throw 'Audio download host checks failed.' }
     & $executable
     if ($LASTEXITCODE -ne 0) { throw 'Capture host checks failed.' }
 } finally {
