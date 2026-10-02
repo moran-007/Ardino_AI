@@ -1,0 +1,5 @@
+build/
+build-host/
+secrets.h
+*.local.json
+*.local.txt

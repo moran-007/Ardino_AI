@@ -1,0 +1,80 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1500" height="1120" viewBox="0 0 1500 1120"><rect width="1500" height="1120" fill="#f5f7fb"/><style>text{font-family:Microsoft YaHei,Arial,sans-serif;fill:#17243c} .title{font-size:28px;font-weight:bold}.label{font-size:17px}.small{font-size:15px}.box{fill:white;stroke:#a7b4c9;stroke-width:2}.wire{fill:none;stroke-width:3}</style>
+<text x='35' y='45' class='title'>多麦克风兼容工程 · 逐线接线图</text>
+<text x='35' y='76' class='small'>ESP32-S3 | 保持现有 GPIO | 接头按信号名称接线，非开发板物理排针图</text>
+<rect x='35' y='105' width='270' height='580' rx='12' class='box'/>
+<text x='55' y='139' class='title'>ESP32-S3 / 主板</text>
+<text x='55' y='180' class='label'>3V3_MIC</text>
+<text x='55' y='235' class='label'>GND</text>
+<text x='55' y='290' class='label'>GPIO42 · BCLK_A</text>
+<text x='55' y='345' class='label'>GPIO41 · WS_A</text>
+<text x='55' y='400' class='label'>GPIO21 · SD_A</text>
+<text x='55' y='455' class='label'>GPIO18 · BCLK_B</text>
+<text x='55' y='510' class='label'>GPIO38 · WS_B</text>
+<text x='55' y='565' class='label'>GPIO11 · SD_B</text>
+<rect x='1050' y='105' width='410' height='180' rx='12' class='box'/>
+<text x='1070' y='134' class='title'>J_MIC1 · INMP441</text>
+<text x='1070' y='157' class='small'>1 VDD → 3V3_MIC</text>
+<path d='M305 175 H370 V152 H1050' class='wire' stroke='#d34242'/>
+<text x='1070' y='179' class='small'>2 GND → GND</text>
+<path d='M305 230 H435 V174 H1050' class='wire' stroke='#525b6b'/>
+<text x='1070' y='201' class='small'>3 SCK → </text>
+<path d='M305 285 H500 V196 H1050' class='wire' stroke='#bd8110'/>
+<text x='1070' y='223' class='small'>GPIO42</text>
+<path d='M305 340 H565 V218 H1050' class='wire' stroke='#2374ba'/>
+<text x='1070' y='245' class='small'>4 WS → </text>
+<path d='M305 395 H630 V240 H1050' class='wire' stroke='#25864b'/>
+<text x='1070' y='267' class='small'>GPIO41</text>
+<path d='M305 230 H435 V262 H1050' class='wire' stroke='#525b6b'/>
+<rect x='1050' y='310' width='410' height='180' rx='12' class='box'/>
+<text x='1070' y='339' class='title'>J_MIC2 · INMP441</text>
+<text x='1070' y='362' class='small'>1 VDD → 3V3_MIC</text>
+<path d='M305 175 H382 V357 H1050' class='wire' stroke='#d34242'/>
+<text x='1070' y='384' class='small'>2 GND → GND</text>
+<path d='M305 230 H447 V379 H1050' class='wire' stroke='#525b6b'/>
+<text x='1070' y='406' class='small'>3 SCK → </text>
+<path d='M305 285 H512 V401 H1050' class='wire' stroke='#bd8110'/>
+<text x='1070' y='428' class='small'>GPIO42</text>
+<path d='M305 340 H577 V423 H1050' class='wire' stroke='#2374ba'/>
+<text x='1070' y='450' class='small'>4 WS → </text>
+<path d='M305 395 H642 V445 H1050' class='wire' stroke='#25864b'/>
+<text x='1070' y='472' class='small'>GPIO41</text>
+<path d='M305 175 H382 V467 H1050' class='wire' stroke='#d34242'/>
+<rect x='1050' y='515' width='410' height='180' rx='12' class='box'/>
+<text x='1070' y='544' class='title'>J_MIC3 · INMP441</text>
+<text x='1070' y='567' class='small'>1 VDD → 3V3_MIC</text>
+<path d='M305 175 H394 V562 H1050' class='wire' stroke='#d34242'/>
+<text x='1070' y='589' class='small'>2 GND → GND</text>
+<path d='M305 230 H459 V584 H1050' class='wire' stroke='#525b6b'/>
+<text x='1070' y='611' class='small'>3 SCK → </text>
+<path d='M305 450 H719 V606 H1050' class='wire' stroke='#bd8110'/>
+<text x='1070' y='633' class='small'>GPIO18</text>
+<path d='M305 505 H784 V628 H1050' class='wire' stroke='#2374ba'/>
+<text x='1070' y='655' class='small'>4 WS → </text>
+<path d='M305 560 H849 V650 H1050' class='wire' stroke='#25864b'/>
+<text x='1070' y='677' class='small'>GPIO38</text>
+<path d='M305 230 H459 V672 H1050' class='wire' stroke='#525b6b'/>
+<text x='55' y='638' class='small'>GPIO11/18/38 为新增预留</text>
+<text x='55' y='665' class='small'>MIC1 左 / MIC2 右共享 SD_A</text>
+<rect x='35' y='720' width='450' height='210' rx='12' class='box'/>
+<text x='55' y='755' class='title'>MAX98357A / 喇叭</text>
+<text x='55' y='790' class='label'>BCLK → GPIO42；LRC → GPIO41</text>
+<text x='55' y='820' class='label'>DIN → GPIO40；SD/EN → GPIO39</text>
+<text x='55' y='850' class='label'>VIN → 5V_AUDIO；GND → 系统地</text>
+<text x='55' y='880' class='label'>SPK+ ─ 喇叭 ─ SPK-；两端不接地</text>
+<rect x='510' y='720' width='470' height='210' rx='12' class='box'/>
+<text x='530' y='755' class='title'>屏幕 / 按钮 / 四路 SG90</text>
+<text x='530' y='790' class='label'>屏 SCK4 / MOSI5 / RST6 / DC7 / CS15</text>
+<text x='530' y='820' class='label'>屏 VCC→3V3；GND→地；ST7735 BL→16</text>
+<text x='530' y='850' class='label'>按钮 GPIO2 / GPIO47 → 常开按钮 → 地</text>
+<text x='530' y='880' class='label'>舵机信号 12/13/14/17；独立供电并共地</text>
+<rect x='1005' y='720' width='455' height='210' rx='12' class='box'/>
+<text x='1025' y='755' class='title'>步进预留 / 电源分支</text>
+<text x='1025' y='790' class='label'>STEP8 / DIR9 / nSLEEP10 → DRV8834</text>
+<text x='1025' y='820' class='label'>VM → 5V_MOTOR；A1/A2、B1/B2 → 两相</text>
+<text x='1025' y='850' class='label'>5V_LOGIC → ESP32 VIN</text>
+<text x='1025' y='880' class='label'>逻辑 / 功放 / 电机在电源入口分支</text>
+<text x='35' y='977' class='label'>接点规则：同名网相连；不同颜色线交叉不代表连接。两组 BCLK、WS、SD 禁止互接。</text>
+<text x='35' y='1010' class='label'>每只麦克风 VDD/GND 就近 100nF；SD_A、SD_B 预留 100kΩ 下拉；MIC2 / MIC3 可暂不装。</text>
+<text x='35' y='1043' class='label'>默认仅 MIC1；/mic count 1|2|3 设置数量。支持选路录音；独立时钟不保证阵列同步，尚未实物验证。</text>
+<text x='35' y='1080' class='small'>详细针表、线束走向、供电及验证步骤：同目录《接线方案.md》 · 2026-10-02</text>
+</svg>

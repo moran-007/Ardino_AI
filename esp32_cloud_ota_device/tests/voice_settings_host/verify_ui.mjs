@@ -1,0 +1,10 @@
+import fs from 'node:fs';
+import vm from 'node:vm';
+const html=fs.readFileSync(process.argv[2],'utf8');
+const scripts=[...html.matchAll(/<script>([\s\S]*?)<\/script>/g)];
+for(const [index,script] of scripts.entries())new vm.Script(script[1],{filename:`capture-script-${index}.js`});
+if(!html.includes('/voice/settings')||!html.includes('/voice/stop'))throw Error('Missing capture routes');
+if(!html.includes('/voice/record/start')||!html.includes('/voice/record/finish'))throw Error('Missing manual recording routes');
+if(!html.includes('/ai/settings')||!html.includes('web_search_enabled'))throw Error('Missing per-device AI settings');
+if(!html.includes('/ai/usage?period=')||!html.includes('usage-rows'))throw Error('Missing per-device API usage');
+console.log(`PASS: ${scripts.length} embedded scripts parse`);

@@ -1,0 +1,10 @@
+#pragma once
+#include <cstdlib>
+#include "fake_hardware.h"
+constexpr unsigned MALLOC_CAP_SPIRAM = 1;
+constexpr unsigned MALLOC_CAP_8BIT = 2;
+inline void *heap_caps_malloc(size_t bytes, unsigned caps) {
+  FakeHardware::captureAllocationCaps = caps;
+  if (FakeHardware::failCaptureAllocation) return nullptr;
+  return std::malloc(bytes);
+}

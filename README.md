@@ -1,6 +1,10 @@
 # Ardino_AI · ESP32-S3 局域网与公网语音对话
 
-项目保留两套互不覆盖的固件：`esp32_lan_device/` 是已部署的局域网稳定版，配合 Windows `pc_server/`；`esp32_cloud_device/` 是整合后的公网最新版，配合 `cloud_server/`。两套固件接线一致，但网络协议、BLE UUID 和 NVS 配置不同，烧录时必须选对目录。
+当前主维护工程为 `esp32_multi_mic_device/`，兼容一只、两只、三只麦克风，默认一只；网页启用多路需先检测通过。`esp32_cloud_ota_device/` 1.4.4 为单麦克风最后一版功能对齐，继续保留兼容维护。两者使用独立 OTA 硬件标识与发布目录。完整目录用途见 [开发文档](开发文档.md)，接线与设置见 [多麦克风工程说明](esp32_multi_mic_device/README.md)。
+
+本次加入音乐闹钟、语音停止/延后、设备网页音乐上传、环境底噪校准和日/周/月费用曲线。完整音乐播放器暂不实现，规划见 [后续建议](docs/音乐播放器后续规划.md)。
+
+另保留历史固件：`esp32_lan_device/` 配合 Windows `pc_server/`，`esp32_cloud_device/` 配合 `cloud_server/`。这两套历史固件接线一致，但与当前主工程的音频接线不同；编译和接线均以选中的工程为准。下文包含早期局域网与公网方案的操作参考。
 
 局域网版运行时 ESP32-S3 不依赖串口传输：按住 BOOT 录音，松开后通过 Wi-Fi 把 16 kHz PCM 发送给电脑；电脑离线识别、调用 DeepSeek、用 Windows 本地语音合成；ESP32 边下载边通过 MAX98357A 播放。公网版把 ASR、LLM 和分段 TTS 交给云端服务，并在设备网页显示实时流程、当前对话和本地历史记录。
 

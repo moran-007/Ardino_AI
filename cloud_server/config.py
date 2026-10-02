@@ -53,6 +53,29 @@ class Settings:
     admin_password_hash: str
     config_encryption_key: str
     admin_cookie_secure: bool
+    firmware_public_key_path: Path
+    firmware_public_base_url: str
+    firmware_hardware_id: str
+    diagnostic_device_id: str = ""
+    reply_style: str = "normal"
+    billing_enabled: bool = True
+    billing_rules: str = "{}"
+    custom_api_key: str = ""
+    custom_base_url: str = "https://api.example.com/v1"
+    custom_model: str = "custom-model"
+    custom_protocol: str = "openai"
+    local_llm_api_key: str = ""
+    local_llm_base_url: str = "http://127.0.0.1:11434"
+    local_llm_model: str = "qwen3:8b"
+    local_llm_protocol: str = "ollama"
+    asr_route: str = 'local_only'
+    tts_route: str = 'local_only'
+    cloud_speech_api_key: str = ''
+    cloud_speech_url: str = 'wss://dashscope.aliyuncs.com/api-ws/v1/inference'
+    cloud_asr_model: str = 'paraformer-realtime-v2'
+    cloud_tts_model: str = 'sambert-zhida-v1'
+    cloud_asr_unit_price: str = ''
+    cloud_tts_unit_price: str = ''
 
     @classmethod
     def from_env(cls) -> "Settings":
@@ -64,6 +87,23 @@ class Settings:
             return Path(value).resolve() if value else None
 
         return cls(
+            diagnostic_device_id=os.getenv("VOICE_DIAGNOSTIC_DEVICE_ID", "").strip(),
+            reply_style=os.getenv("VOICE_REPLY_STYLE", "normal"),
+            billing_enabled=_bool("VOICE_BILLING_ENABLED", True),
+            custom_api_key=os.getenv('CUSTOM_LLM_API_KEY', ''),
+            custom_base_url=os.getenv('CUSTOM_LLM_BASE_URL', 'https://api.example.com/v1'),
+            custom_model=os.getenv('CUSTOM_LLM_MODEL', 'custom-model'),
+            custom_protocol=os.getenv('CUSTOM_LLM_PROTOCOL', 'openai'),
+            local_llm_api_key=os.getenv('LOCAL_LLM_API_KEY', ''),
+            local_llm_base_url=os.getenv('LOCAL_LLM_BASE_URL', 'http://127.0.0.1:11434'),
+            local_llm_model=os.getenv('LOCAL_LLM_MODEL', 'qwen3:8b'),
+            local_llm_protocol=os.getenv('LOCAL_LLM_PROTOCOL', 'ollama'),
+            asr_route=os.getenv('VOICE_ASR_ROUTE', 'local_only'),
+            tts_route=os.getenv('VOICE_TTS_ROUTE', 'local_only'),
+            cloud_speech_api_key=os.getenv('CLOUD_SPEECH_API_KEY', ''),
+            cloud_speech_url=os.getenv('CLOUD_SPEECH_URL', 'wss://dashscope.aliyuncs.com/api-ws/v1/inference'),
+            cloud_asr_model=os.getenv('CLOUD_ASR_MODEL', 'paraformer-realtime-v2'),
+            cloud_tts_model=os.getenv('CLOUD_TTS_MODEL', 'sambert-zhida-v1'),
             data_dir=data_dir,
             database_path=Path(os.getenv("VOICE_DATABASE_PATH", data_dir / "voice.db")).resolve(),
             auth_pepper=os.getenv("VOICE_AUTH_PEPPER", "dev-only-change-me"),
@@ -102,6 +142,15 @@ class Settings:
             admin_password_hash=os.getenv("VOICE_ADMIN_PASSWORD_HASH", ""),
             config_encryption_key=os.getenv("VOICE_CONFIG_KEY", ""),
             admin_cookie_secure=_bool("VOICE_ADMIN_COOKIE_SECURE", False),
+            firmware_public_key_path=Path(
+                os.getenv("VOICE_FIRMWARE_PUBLIC_KEY", root / "firmware_public_key.pem")
+            ).resolve(),
+            firmware_public_base_url=os.getenv(
+                "VOICE_FIRMWARE_PUBLIC_BASE_URL", "https://voice.bsnlch.xyz"
+            ).strip().rstrip("/"),
+            firmware_hardware_id=os.getenv(
+                "VOICE_FIRMWARE_HARDWARE_ID", "esp32s3-cloud-voice-v1"
+            ).strip(),
         )
 
     @classmethod

@@ -2,6 +2,8 @@ fastapi>=0.115,<1
 cryptography>=45,<47
 httpx>=0.28,<1
 numpy>=2.0,<3
+python-multipart>=0.0.20,<1
 sherpa-onnx==1.13.6
 sherpa-onnx-bin==1.13.6
 uvicorn>=0.34,<1
+dashscope==1.27.7

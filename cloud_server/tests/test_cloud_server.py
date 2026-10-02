@@ -6,6 +6,7 @@ import re
 import time
 import unittest
 from pathlib import Path
+from urllib.parse import quote
 from unittest.mock import patch
 
 from fastapi.testclient import TestClient
@@ -155,6 +156,7 @@ class CloudServerTest(unittest.TestCase):
         self.assertIn("你喜欢恐龙", question)
         self.assertNotIn("你喜欢绘画", question)
         self.assertIn("小明", system_prompt)
+        self.assertIn("本地解析并执行设置、取消和查询闹钟、计时器、便签或待办", system_prompt)
         self.assertEqual(len(self.store.list_memories(device_a)), 2)
         self.assertEqual(len(self.store.list_memories(device_b)), 1)
         self.assertEqual(self.store.clear_memories(device_a), 2)
@@ -165,6 +167,56 @@ class CloudServerTest(unittest.TestCase):
         self.assertFalse(self.store.authenticate(device_a, "token-a"))
         self.store.set_device_enabled(device_a, True)
         self.assertTrue(self.store.authenticate(device_a, "token-a"))
+
+    def test_device_context_reaches_llm(self) -> None:
+        llm = CapturingLLM()
+        service = VoiceService(self.settings, self.store, MockASR(), [llm], MockTTS())
+        client = TestClient(create_app(self.settings, service))
+        headers = dict(self.headers)
+        weather = "地点：上海；当前：晴 25℃；三天预报：今天 晴 20~28℃，明天 多云 21~27℃"
+        headers["X-Device-Weather"] = quote(weather, safe="")
+        memos = "便签 1 条，待办 1 条（未完成 1 条）；便签：1、买电池；待办：1、未完成 检查接线"
+        headers["X-Device-Memos"] = quote(memos, safe="")
+        try:
+            response = client.post("/voice-api/v1/dialogue", headers=headers, content=bytes(3200))
+            self.assertEqual(response.status_code, 202, response.text)
+            payload = response.json()
+            self.assertEqual(
+                payload["context"], {"schema": 1, "weather": True, "memos": True}
+            )
+            job_id = payload["job_id"]
+            for _ in range(100):
+                job = self.store.get_job(job_id, "pc-simulator-01")
+                if job["status"] in {"completed", "failed"}:
+                    break
+                time.sleep(0.02)
+            self.assertEqual(job["status"], "completed", job)
+            self.assertEqual(len(llm.calls), 1)
+            question, system_prompt = llm.calls[0]
+            self.assertIn(weather, question)
+            self.assertIn("只根据这份设备天气数据", system_prompt)
+            self.assertIn("不得回答‘无法查询实时天气’", system_prompt)
+            self.assertIn(memos, question)
+            self.assertIn("根据这份快照简洁列出真实内容", system_prompt)
+            self.assertNotIn(weather, system_prompt)
+            self.assertNotIn(memos, system_prompt)
+        finally:
+            client.close()
+
+    def test_device_context_rejects_invalid_or_oversized_utf8(self) -> None:
+        invalid = dict(self.headers)
+        invalid["X-Device-Memos"] = "%FF"
+        response = self.client.post(
+            "/voice-api/v1/dialogue", headers=invalid, content=bytes(3200)
+        )
+        self.assertEqual(response.status_code, 400, response.text)
+
+        oversized = dict(self.headers)
+        oversized["X-Device-Weather"] = quote("晴" * 200, safe="")
+        response = self.client.post(
+            "/voice-api/v1/dialogue", headers=oversized, content=bytes(3200)
+        )
+        self.assertEqual(response.status_code, 400, response.text)
 
     def test_device_voice_settings_are_authenticated_and_isolated(self) -> None:
         other_token = self.store.register_device("voice-device-02", "other", "voice-token-02")
@@ -230,6 +282,79 @@ class CloudServerTest(unittest.TestCase):
         self.assertGreater(len(audio), 64)
         self.assertEqual(chinese.calls[0][2]["speaker_id"], 2)
         self.assertEqual(english.calls[0][1], (456, 0.9))
+
+    def test_mixed_language_tts_routes_standalone_numbers_to_chinese(self) -> None:
+        self.assertEqual(
+            mixed_language_parts("数字 0、1 和 3.14，设备 ESP32。"),
+            [("zh", "数字 0、1 和 3.14，设备 "), ("en", "ESP32。")],
+        )
+        chinese = FakeLanguageTTS(b"Z")
+        english = FakeLanguageTTS(b"E")
+        tts = MixedLanguageTTS(chinese, english)
+
+        tts.synthesize("0、1、3.14。", speaker_id=2, english_speaker_id=456)
+        tts.synthesize("日期 2026-08-30。", speaker_id=2, english_speaker_id=456)
+
+        self.assertEqual(
+            [call[0] for call in chinese.calls],
+            ["0、1、3.14。", "日期 2026年08月30日。"],
+        )
+        self.assertEqual(english.calls, [])
+
+    def test_mixed_language_tts_speaks_basic_arithmetic_in_chinese(self) -> None:
+        chinese = FakeLanguageTTS(b"Z")
+        english = FakeLanguageTTS(b"E")
+        tts = MixedLanguageTTS(chinese, english)
+
+        tts.synthesize(
+            "1 + 2 = 3；8-3=5；4*2=8；8/2=4；6×2=12；12÷3=4。",
+            speaker_id=2,
+            english_speaker_id=456,
+        )
+
+        self.assertEqual(
+            [call[0] for call in chinese.calls],
+            ["1加2等于3；8减3等于5；4乘以2等于8；8除以2等于4；6乘以2等于12；12除以3等于4。"],
+        )
+        self.assertEqual(english.calls, [])
+
+    def test_mixed_language_tts_does_not_treat_phone_numbers_or_ranges_as_subtraction(self) -> None:
+        chinese = FakeLanguageTTS(b"Z")
+        english = FakeLanguageTTS(b"E")
+        tts = MixedLanguageTTS(chinese, english)
+
+        tts.synthesize(
+            "客服电话 400-123-4567，适合 8-10 岁。",
+            speaker_id=2,
+            english_speaker_id=456,
+        )
+
+        self.assertEqual(
+            [call[0] for call in chinese.calls],
+            ["客服电话 400-123-4567，适合 8-10 岁。"],
+        )
+        self.assertEqual(english.calls, [])
+
+    def test_mixed_language_tts_normalizes_common_spoken_domains(self) -> None:
+        chinese = FakeLanguageTTS(b"Z")
+        english = FakeLanguageTTS(b"E")
+        tts = MixedLanguageTTS(chinese, english)
+
+        tts.synthesize(
+            "价格 ￥12.5，浓度 50%，温度 25°C，距离 3.2km，频率 16kHz，"
+            "电压 5V，水 H2O，二氧化碳 CO2。",
+            speaker_id=2,
+            english_speaker_id=456,
+        )
+
+        self.assertEqual(
+            [call[0] for call in chinese.calls],
+            [
+                "价格 12.5元，浓度 百分之50，温度 25摄氏度，距离 3.2千米，"
+                "频率 16千赫兹，电压 5伏特，水 水，二氧化碳 二氧化碳。"
+            ],
+        )
+        self.assertEqual(english.calls, [])
 
     def test_rejects_malformed_pcm(self) -> None:
         response = self.client.post("/voice-api/v1/dialogue", headers=self.headers, content=b"x")
@@ -341,17 +466,20 @@ class CloudServerTest(unittest.TestCase):
             self.assertIn("密码错误", denied.text)
             unlocked = client.post("/admin/unlock", data={"password": "test-admin-password"}, follow_redirects=True)
             self.assertEqual(unlocked.status_code, 200)
-            self.assertIn("<details", unlocked.text)
-            self.assertIn("恢复推荐默认配置", unlocked.text)
-            self.assertIn("创建设备凭证", unlocked.text)
-            self.assertIn('list="deepseek-model-options"', unlocked.text)
-            self.assertIn('list="qwen-model-options"', unlocked.text)
-            self.assertIn('list="glm-model-options"', unlocked.text)
-            self.assertIn("设备凭证、记忆与个性化语音", unlocked.text)
-            self.assertIn('name="memory_turns"', unlocked.text)
-            self.assertIn('name="tts_english_speaker_id"', unlocked.text)
-            self.assertIn('value="clear_memory"', unlocked.text)
-            self.assertIn('value="disable"', unlocked.text)
+            self.assertIn("Token 用量", unlocked.text)
+            settings_page = client.get("/admin/settings").text
+            self.assertIn("<details", settings_page)
+            self.assertIn("恢复推荐默认配置", settings_page)
+            key_page = client.get("/admin/api-keys").text
+            self.assertIn('list="deepseek-model-options"', key_page)
+            self.assertIn('list="qwen-model-options"', key_page)
+            self.assertIn('list="glm-model-options"', key_page)
+            devices_page = client.get("/admin/devices").text
+            self.assertIn("创建设备凭证", devices_page)
+            self.assertIn('name="memory_turns"', devices_page)
+            self.assertIn('name="tts_english_speaker_id"', devices_page)
+            self.assertIn('value="clear_memory"', devices_page)
+            self.assertIn('value="disable"', devices_page)
             match = re.search(r'name="csrf" value="([^"]+)"', unlocked.text)
             self.assertIsNotNone(match)
             saved = client.post(
@@ -390,7 +518,7 @@ class CloudServerTest(unittest.TestCase):
             old_password = client.post("/admin/unlock", data={"password": "test-admin-password"})
             self.assertIn("密码错误", old_password.text)
             new_password = client.post("/admin/unlock", data={"password": "changed-admin-password"}, follow_redirects=True)
-            self.assertIn("保存并重载", new_password.text)
+            self.assertIn("保存并重载", client.get("/admin/settings").text)
             reset_csrf = re.search(r'name="csrf" value="([^"]+)"', new_password.text).group(1)
             reset = client.post(
                 "/admin/reset-recommended",
