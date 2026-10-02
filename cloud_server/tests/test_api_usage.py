@@ -2,6 +2,7 @@ import json
 import sqlite3
 import tempfile
 import unittest
+from datetime import datetime, timezone
 from dataclasses import replace
 from pathlib import Path
 from contextlib import closing
@@ -13,10 +14,35 @@ from cloud_server.config import Settings
 from cloud_server.admin_views import billing_content
 from cloud_server.speech_fallback import record_cloud_usage
 from cloud_server.store import Store
-from cloud_server.usage_report import compact_device_usage, expense_history, usage_report
+from cloud_server.usage_report import compact_device_usage, expense_history, usage_report, filtered_cost_chart
 
 
 class ApiUsageTest(unittest.TestCase):
+    def test_chart_filter_window_hourly_points_and_unknown_currency(self):
+        now = datetime(2026, 10, 2, 12, 30, tzinfo=timezone.utc)
+        base = dict(kind='llm', cost_currency='CNY', cost_amount='0.2', cost_status='priced')
+        records = [dict(base, created_at='2026-10-01T12:29:00Z'),
+                   dict(base, created_at='2026-10-01T12:31:00Z'),
+                   dict(base, created_at='2026-10-02T10:01:00Z', cost_currency='USD'),
+                   dict(base, created_at='2026-10-02T11:01:00Z', cost_amount=None),
+                   dict(base, created_at='2026-10-02T13:00:00Z')]
+        chart = filtered_cost_chart(records, '24h', now)
+        self.assertEqual(chart['grain'], 'hour')
+        self.assertEqual(len(chart['rows']), 25)
+        self.assertEqual(chart['rows'][0]['date'], '2026-10-01 20:00')
+        self.assertEqual(chart['rows'][0]['costs']['CNY'], '0.2')
+        self.assertEqual(sum(row['calls'] for row in chart['rows']), 3)
+        usd_hour = next(row for row in chart['rows'] if row['date'] == '2026-10-02 18:00')
+        self.assertEqual(usd_hour['costs'], {'CNY': '0', 'USD': '0.2'})
+        unknown_hour = next(row for row in chart['rows'] if row['date'] == '2026-10-02 19:00')
+        self.assertIsNone(unknown_hour['costs']['CNY'])
+        self.assertEqual(chart['rows'][-1]['costs']['CNY'], '0')
+        for period, count in [('7d', 8), ('30d', 31)]:
+            daily = filtered_cost_chart(records, period, now)
+            self.assertEqual(daily['grain'], 'day')
+            self.assertEqual(len(daily['rows']), count)
+        self.assertEqual(filtered_cost_chart([], 'all', now)['grain'], 'hour')
+
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
         self.settings = replace(Settings.for_test(Path(self.temp.name)), qwen_api_key='secret-new',
@@ -229,9 +255,9 @@ class ApiUsageTest(unittest.TestCase):
         report = usage_report(self.store, self.settings)
         content = billing_content(self.settings, self.store.billing_summary(), [], 'all', 'csrf', api_report=report)
         self.assertIn('<th>日期</th><th>使用量</th><th>单价</th><th>总价格</th>', content)
-        self.assertIn('<option value="day">日</option>', content)
-        self.assertIn('<option value="week">周</option>', content)
-        self.assertIn('<option value="month">月</option>', content)
+        self.assertNotIn('id="cost-grain"', content)
+        self.assertIn('跟随上方筛选', content)
+        self.assertIn('cost-resolution', content)
         self.assertIn('<details><summary>价格配置与统计开关</summary>', content)
         self.assertNotIn('最近调用与单价快照', content)
 

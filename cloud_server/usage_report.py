@@ -8,6 +8,50 @@ from .model_catalog import PROVIDERS
 DISPLAY_ZONE = timezone(timedelta(hours=8))
 
 
+def filtered_cost_chart(records, period, now=None):
+    """Use the filter's exact window and choose a readable time resolution."""
+    now = (now or datetime.now(timezone.utc)).astimezone(DISPLAY_ZONE)
+    dated = []
+    for record in records:
+        date = datetime.fromisoformat(record['created_at'].replace('Z', '+00:00'))
+        if date.tzinfo is None:
+            date = date.replace(tzinfo=timezone.utc)
+        dated.append((date.astimezone(DISPLAY_ZONE), record))
+    start = now - timedelta(days={'24h': 1, '7d': 7, '30d': 30}.get(period, 0)) if period != 'all' else min(now, min((d for d, _ in dated), default=now))
+    dated = [(d, r) for d, r in dated if start <= d <= now]
+    span = max(0, (now - start).total_seconds() / 86400)
+    grain = 'hour' if period == '24h' or period == 'all' and span <= 2 else 'day' if span <= 60 else 'week' if span <= 365 else 'month'
+    def floor(date):
+        date = date.replace(minute=0, second=0, microsecond=0)
+        if grain != 'hour': date = date.replace(hour=0)
+        if grain == 'week': date -= timedelta(days=date.weekday())
+        if grain == 'month': date = date.replace(day=1)
+        return date
+    currencies = set()
+    buckets = {}
+    for date, record in dated:
+        speech = record['kind'] == 'speech'
+        currency = 'CNY' if speech else record.get('cost_currency', '')
+        amount = record.get('estimated_cost') if speech else record.get('cost_amount')
+        if currency: currencies.add(currency)
+        bucket = buckets.setdefault(floor(date), {'costs': {}, 'unknown': set(), 'calls': 0, 'unpriced_calls': 0, 'partial_calls': 0})
+        bucket['calls'] += 1
+        bucket['unpriced_calls'] += amount is None
+        bucket['partial_calls'] += record.get('cost_status') == 'partial'
+        if amount is None: bucket['unknown'].add(currency)
+        else: bucket['costs'][currency] = bucket['costs'].get(currency, Decimal(0)) + Decimal(amount)
+    currencies = currencies or {'CNY'}
+    rows = []
+    cursor, last = floor(start), floor(now)
+    while cursor <= last:
+        bucket = buckets.get(cursor, {'costs': {}, 'unknown': set(), 'calls': 0, 'unpriced_calls': 0, 'partial_calls': 0})
+        costs = {currency: format(bucket['costs'][currency], 'f') if currency in bucket['costs'] else None if currency in bucket['unknown'] or '' in bucket['unknown'] else '0' for currency in currencies}
+        rows.append({'date': cursor.strftime('%Y-%m-%d %H:00') if grain == 'hour' else cursor.date().isoformat(),
+                     'costs': costs, **{key: bucket[key] for key in ('calls', 'unpriced_calls', 'partial_calls')}})
+        cursor = cursor.replace(year=cursor.year + (cursor.month == 12), month=cursor.month % 12 + 1) if grain == 'month' else cursor + timedelta(hours=1) if grain == 'hour' else cursor + timedelta(days=7 if grain == 'week' else 1)
+    return {'grain': grain, 'period': period, 'start': start.isoformat(), 'end': now.isoformat(), 'rows': rows}
+
+
 def recorded_price(record):
     """Display the rule applied at call time, never today's configured price."""
     try:
@@ -145,6 +189,12 @@ def compact_device_usage(report):
             'partial_calls': sum(row['partial_calls'] for row in rows),
             'foreign_cost': any(row['foreign_cost'] for row in rows),
             'note': '仅显示人民币已计价费用，四舍五入至两位小数；非人民币费用不换算。未扣赠送额度、折扣或资源包，实际扣费以厂商账单为准。'}
+    if 'cost_chart' in report:
+        chart = report['cost_chart']
+        result['cost_chart'] = {**{key: chart[key] for key in ('grain', 'period', 'start', 'end')},
+                                'rows': [{'date': row['date'], 'cost': row['costs'].get('CNY'),
+                                          'calls': row['calls'], 'unpriced_calls': row['unpriced_calls'],
+                                          'partial_calls': row['partial_calls']} for row in chart['rows']]}
     # Leave headroom under the firmware's 32 KiB streaming limit. Trimming is
     # display-only: all accounting totals above still include the entire ledger.
     while len(json.dumps(result, ensure_ascii=False, separators=(',', ':')).encode()) > 28000:
@@ -185,7 +235,8 @@ def period_since(period, now=None):
 def usage_report(store, settings, period='all', device_id=None):
     since = period_since(period)
     report = store.api_usage_summary(since, device_id)
-    history = expense_history(store.api_usage_records(since, device_id))
+    records = store.api_usage_records(since, device_id)
+    history = expense_history(records)
     current = {name: store.api_key_id(name, getattr(settings, name + '_api_key'), getattr(settings, name + '_base_url'))
                for name in PROVIDERS}
     current['cloud_speech'] = store.api_key_id('cloud_speech', settings.cloud_speech_api_key, settings.cloud_speech_url)
@@ -210,4 +261,5 @@ def usage_report(store, settings, period='all', device_id=None):
         row['current_key'] = bool(row['key_id'] and current.get(row['provider']) == row['key_id'])
         del row['key_id']
     return {'period': period, 'updated_at': datetime.now(timezone.utc).isoformat(), **report, **history,
+            'cost_chart': filtered_cost_chart(records, period),
             'note': '仅统计本服务已记录的调用；费用未扣赠送额度、折扣或资源包，余额与实际扣费以厂商账单为准。'}

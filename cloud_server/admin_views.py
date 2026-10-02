@@ -299,21 +299,21 @@ def billing_rule_form(provider, model, rule, csrf, *, new=False):
     return content + '<button type="submit">保存规则</button></fieldset></form>'
 
 
-def cost_curve(series, totals):
-    data = json.dumps(series, ensure_ascii=False).replace('<', '\\u003c')
+def cost_curve(chart, totals):
+    data = json.dumps(chart, ensure_ascii=False).replace('<', '\\u003c')
     options = ''.join(f'<option>{esc(currency)}</option>' for currency in totals) or '<option>CNY</option>'
-    return '''<div class="panel"><div class="actions"><strong>价格曲线</strong><select id="cost-grain" aria-label="曲线周期"><option value="day">日</option><option value="week">周</option><option value="month">月</option></select><select id="cost-currency" aria-label="币种">''' + options + '''</select></div>
+    return '''<div class="panel"><div class="actions"><strong>价格曲线</strong><span id="cost-resolution" class="muted"></span><select id="cost-currency" aria-label="币种">''' + options + '''</select></div>
 <svg id="cost-chart" viewBox="0 0 720 220" role="img" aria-label="已计价费用曲线" style="width:100%;max-height:240px"></svg><p id="cost-caption" class="muted"></p></div>
 <script>(()=>{const data=''' + data + ''';const $=id=>document.getElementById(id),ns='http://www.w3.org/2000/svg';
-function draw(){const rows=data[$('cost-grain').value]||[],currency=$('cost-currency').value,svg=$('cost-chart');svg.replaceChildren();
+function draw(){const rows=data.rows||[],currency=$('cost-currency').value,svg=$('cost-chart');svg.replaceChildren();$('cost-resolution').textContent=({'hour':'按小时','day':'按日','week':'按周','month':'按月'}[data.grain]||'')+' · 跟随上方筛选';
 const values=rows.map(r=>r.costs[currency]!=null?Number(r.costs[currency]):r.calls===0?0:null),known=values.filter(v=>v!==null),max=Math.max(...known,0.000001);
 function add(tag,attrs,text){const el=document.createElementNS(ns,tag);for(const [key,value] of Object.entries(attrs))el.setAttribute(key,value);if(text!=null)el.textContent=text;svg.append(el);return el;}
 add('line',{x1:65,y1:180,x2:700,y2:180,stroke:'#cbd8d5'});add('text',{x:5,y:25,fill:'#6f828d','font-size':11},Number(max.toPrecision(5))+' '+currency);
 let points=[];const flush=()=>{if(points.length)add('polyline',{points:points.join(' '),fill:'none',stroke:'#168e83','stroke-width':2});points=[];};
 rows.forEach((row,i)=>{const v=values[i],x=65+(rows.length<2?317:i*635/(rows.length-1));if(v===null){flush();return;}const y=180-v/max*145;points.push(x+','+y);const dot=add('circle',{cx:x,cy:y,r:3,fill:'#168e83'}),title=document.createElementNS(ns,'title');title.textContent=row.date+'：'+(row.costs[currency]||'0')+' '+currency+(row.unpriced_calls?'（含未计价调用）':'')+(row.partial_calls?'（费用不完整）':'');dot.append(title);});flush();
 if(rows.length){add('text',{x:65,y:210,fill:'#6f828d','font-size':11},rows[0].date);add('text',{x:700,y:210,'text-anchor':'end',fill:'#6f828d','font-size':11},rows.at(-1).date);}
-$('cost-caption').textContent=known.length?'所选周期的日／周／月费用合计；未计价时留空，鼠标指向圆点查看金额。':'所选周期暂无该币种计价金额。';}
-$('cost-grain').onchange=draw;$('cost-currency').onchange=draw;draw();})();</script>'''
+$('cost-caption').textContent=known.length?'时间范围与上方筛选一致；无调用时为零，未计价时留空。鼠标指向圆点查看金额。':'所选范围暂无该币种计价金额。';}
+$('cost-currency').onchange=draw;draw();})();</script>'''
 
 
 def billing_content(current, summary, recent, period, csrf, speech_recent=(), api_report=None):
@@ -327,7 +327,7 @@ def billing_content(current, summary, recent, period, csrf, speech_recent=(), ap
                 totals[currency] = format(Decimal(totals.get(currency, '0')) + Decimal(amount), 'f')
     content += '<p><strong>已计价总额：' + (' · '.join(esc(amount) + ' ' + esc(currency) for currency, amount in totals.items()) or '暂无计价金额') + '</strong></p>'
     if api_report:
-        content += cost_curve(api_report['cost_series'], totals)
+        content += cost_curve(api_report['cost_chart'], totals)
         content += '<div class="table-wrap"><table><thead><tr><th>日期</th><th>使用量</th><th>单价</th><th>总价格</th></tr></thead><tbody>'
         for row in api_report['expense_rows']:
             usage = f'输入 {number(row["input_tokens"])}／输出 {number(row["output_tokens"])} Token' if row['kind'] == 'llm' else esc(row['quantity']) + esc(row['unit'])
