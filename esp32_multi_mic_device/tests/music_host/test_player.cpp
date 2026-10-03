@@ -15,7 +15,7 @@ void usePotentiometerVolume(bool enabled) { pot = enabled; }
 bool potentiometerVolumeEnabled() { return pot; }
 uint8_t readPotentiometerVolume() { return volume; }
 }
-namespace OfflineWake { bool isPaused = false; bool listening() { return !isPaused; } void suspend() { isPaused = true; } bool paused() { return isPaused; } void resume() { isPaused = false; } }
+namespace OfflineWake { bool isPaused = false; bool listening() { return false; } bool listenerActive() { return !isPaused; } void suspend() { isPaused = true; } bool paused() { return isPaused; } void resume() { isPaused = false; } }
 namespace RobotDisplay { void setMusicStatus(bool, const String &, const String &, const String &, const String &, const String &, uint64_t, uint64_t) {} }
 size_t checks = 0;
 void require(bool ok, const char *msg) { ++checks; if (!ok) throw std::runtime_error(msg); }
@@ -62,9 +62,39 @@ int main() { try {
   // Exercise real tick with PCM buffered but never whole-song allocation.
   FullMusic::command = ""; FullMusic::intent.resume(); FullMusic::ring.clear();
   uint8_t bytes[2048] = {}; FullMusic::ring.write(bytes, sizeof(bytes)); const auto before = FullMusic::intent.renderedFrames;
-  FullMusic::tick(); require(VoiceInput::rate == 48000 && FullMusic::intent.renderedFrames == before + 480 && FullMusic::ring.size() == 1088, "bounded tick/progress/consume failed");
+  FullMusic::eof = true; FullMusic::audioStep(); require(!OfflineWake::isPaused && VoiceInput::rate == 48000 && FullMusic::intent.renderedFrames == before + 480 && FullMusic::ring.size() == 1088, "bounded tick/progress/consume failed");
+  String metadata; int metadataCode;
+  require(FullMusic::request("/music", "GET", "", metadata, metadataCode) && VoiceInput::rate == 48000 && FullMusic::intent.holds == 0,
+      "music browsing paused output or changed audio clock");
+  fakeFreeInternal = 40000;
+  FullMusic::eof = false; FullMusic::ring.clear(); bool refillObserved = false;
+  fakeDelayHook = [&]() {
+    if (refillObserved) return;
+    require(FullMusic::networkHolds == 0 && FullMusic::intent.holds == 0,
+        "catalogue refill prevented stream/audio progress");
+    std::vector<uint8_t> reserve(FullMusic::PROXY_RESERVE_BYTES);
+    FullMusic::ring.write(reserve.data(), reserve.size()); refillObserved = true;
+  };
+  require(FullMusic::request("/music", "GET", "", metadata, metadataCode) && refillObserved,
+      "catalogue did not refill before taking streaming TLS");
+  fakeDelayHook = {}; FullMusic::ring.clear(); const auto requestCount = FakeNetwork::requests;
+  require(!FullMusic::request("/music", "GET", "", metadata, metadataCode) && metadataCode == 503 &&
+      FakeNetwork::requests == requestCount && FullMusic::intent.playing && !FullMusic::networkHolds,
+      "refill timeout interrupted music or opened metadata TLS");
+  fakeFreeInternal = 100000; fakeLargestInternal = 8000;
+  require(!FullMusic::request("/music", "GET", "", metadata, metadataCode) && metadataCode == 503 &&
+      FakeNetwork::requests == requestCount && !FullMusic::networkHolds,
+      "fragmented internal heap allowed another TLS handshake");
+  fakeLargestInternal = 32768; FullMusic::workerClosed = false;
+  require(FullMusic::request("/music", "GET", "", metadata, metadataCode) && !FullMusic::networkHolds &&
+      FullMusic::intent.holds == 0 && FullMusic::intent.playing,
+      "RAM-safe metadata connection cancelled the ongoing music stream");
+  FullMusic::workerClosed = true;
+  FullMusic::eof = true;
   require(FullMusic::hold() && VoiceInput::rate == 16000 && FakeNetwork::active == 0, "foreground did not close TLS and restore rate");
-  FullMusic::pause(); FullMusic::release(); FullMusic::tick(); require(VoiceInput::rate == 16000 && !FullMusic::playing(), "paused user intent resumed after foreground");
+  VoiceInput::amplifierMuted = false; FullMusic::audioStep();
+  require(!VoiceInput::amplifierMuted, "background output muted foreground TTS");
+  FullMusic::pause(); FullMusic::release(); FullMusic::audioStep(); require(VoiceInput::rate == 16000 && !FullMusic::playing(), "paused user intent resumed after foreground");
   require(FakeNetwork::requests >= 2 && FakeNetwork::reads > FakeNetwork::requests, "metadata test did not exercise partial reads");
   FakeNetwork::audioBytes = 12344; FakeNetwork::durationMs = 100;
   FullMusic::play("track"); runWorkerUntilClosed();
@@ -83,7 +113,7 @@ int main() { try {
   FakeNetwork::cancelAt = SIZE_MAX; FakeNetwork::audioBytes = 1000000; FullMusic::play("track");
   bool filled = false;
   fakeDelayHook = [&]() {
-    if (FullMusic::ring.size() == 192 * 1024) { filled = true; FullMusic::stop(); }
+    if (FullMusic::ring.size() == FullMusic::BUFFER_BYTES) { filled = true; FullMusic::stop(); }
     if (filled && FullMusic::workerClosed) throw StopWorker();
   };
   try { FullMusic::networkTask(nullptr); } catch (const StopWorker &) {} fakeDelayHook = {};

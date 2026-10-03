@@ -21,6 +21,8 @@ bool consumeDetected();
 bool ready();
 bool enabled();
 bool listening();
+// Listener may be between read/detect calls while still enabled and running.
+bool listenerActive();
 const char *modelId();
 const char *wakeWord();
 const char *lastError();

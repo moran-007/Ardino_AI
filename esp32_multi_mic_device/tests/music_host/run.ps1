@@ -17,4 +17,9 @@ try {
     if ($LASTEXITCODE -ne 0) { throw 'Production player compilation failed' }
     & (Join-Path $output 'test_full_player.exe')
     if ($LASTEXITCODE -ne 0) { throw 'Production player checks failed' }
+    & $Gxx '-std=c++17' '-O1' '-Wall' '-Wextra' "-I$PSScriptRoot" "-I$sketch" `
+        (Join-Path $PSScriptRoot 'test_tls_memory.cpp') '-o' (Join-Path $output 'test_tls_memory.exe')
+    if ($LASTEXITCODE -ne 0) { throw 'TLS memory checks compilation failed' }
+    & (Join-Path $output 'test_tls_memory.exe')
+    if ($LASTEXITCODE -ne 0) { throw 'TLS memory checks failed' }
 } finally { $env:PATH = $previousPath }

@@ -4,6 +4,20 @@
 #include <string.h>
 
 namespace MusicStream {
+// Start/recover with four seconds queued; never alternate tiny TLS records and
+// tiny writes after a starvation. A genuine EOF may drain a short final tail.
+class BufferGate {
+ public:
+  static constexpr size_t PREFILL_BYTES = 48000 * 2 * 4;
+  bool ready() const { return ready_; }
+  void reset() { ready_ = false; }
+  bool update(size_t bytes, bool eof) {
+    if (ready_ && bytes < 960 && !eof) ready_ = false;
+    if (!ready_ && (bytes >= PREFILL_BYTES || (eof && bytes))) ready_ = true;
+    return ready_;
+  }
+ private: bool ready_ = false;
+};
 // Callers serialize access; storage is PSRAM on the device, ordinary RAM in tests.
 class Ring {
  public:

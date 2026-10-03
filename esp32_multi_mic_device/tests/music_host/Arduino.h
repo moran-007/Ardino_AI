@@ -10,6 +10,8 @@
 #include <ctime>
 #include <cmath>
 #include <functional>
+inline bool fakePsramAvailable = true;
+inline bool psramFound() { return fakePsramAvailable; }
 class Stream;
 inline float radians(float degrees){return degrees*3.14159265358979323846f/180.0f;}
 #define ARDUINO 10800

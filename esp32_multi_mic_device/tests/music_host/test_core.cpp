@@ -31,6 +31,12 @@ int main() { try {
     } require(ring.size() == expected.size(), "ring lost partial TX samples");
   }
   ring.clear(); require(ring.size() == 0 && ring.space() == sizeof(storage), "generation reset kept old audio");
+  MusicStream::BufferGate gate;
+  require(!gate.update(960, false), "playback started on a single TLS record");
+  require(gate.update(MusicStream::BufferGate::PREFILL_BYTES, false), "prebuffer never starts output");
+  require(!gate.update(958, false) && !gate.update(960, false), "underflow rapidly restarted tiny fragments");
+  require(gate.update(100, true), "short final EOF tail was lost");
+  gate.reset(); require(!gate.ready(), "track/pause kept stale prebuffer state");
   MusicStream::Intent intent; intent.newTrack(); const auto old = intent.generation;
   intent.hold(); intent.pause(); intent.release(); require(!intent.downloadAllowed(), "foreground resume overrode user pause");
   intent.resume(); intent.hold(); intent.hold(); intent.release(); require(!intent.downloadAllowed(), "nested hold released early");

@@ -19,6 +19,7 @@ using SecureClient = WiFiClientSecure;
 #include "web_alarm_music.h"
 #include "music_player.h"
 #include "full_music_player.h"
+#include "tls_memory.h"
 #include "web_music_ui.h"
 #include "bounded_audio_download.h"
 #include "conversation_session.h"
@@ -131,7 +132,7 @@ String profileSyncMessage = "等待联网同步";
 String pendingFocusAnnouncement;
 uint32_t lastFocusDisplayMs = 0;
 constexpr char DEFAULT_SERVER_URL[] = "https://voice.bsnlch.xyz";
-constexpr char FIRMWARE_VERSION[] = "2.1.0";
+constexpr char FIRMWARE_VERSION[] = "2.1.1";
 constexpr char OTA_MANIFEST_PATH[] = "/voice-api/v1/firmware/manifest";
 constexpr char AMAP_API_HOST[] = "restapi.amap.com";
 constexpr bool DIALOGUE_TRANSPORT_HTTP = true;
@@ -1032,6 +1033,7 @@ String statusJson(const String &message = "") {
   doc["offline_wake_enabled"] = settings.offlineWakeEnabled;
   doc["offline_wake_ready"] = OfflineWake::ready();
   doc["offline_wake_listening"] = OfflineWake::listening();
+  doc["offline_wake_active"] = OfflineWake::listenerActive();
   doc["offline_wake_model"] = settings.offlineWakeModel;
   doc["offline_wake_word"] = OfflineWake::wakeWord();
   doc["offline_wake_error"] = OfflineWake::lastError();
@@ -1091,6 +1093,7 @@ String runtimeJson() {
   doc["offline_wake_enabled"] = settings.offlineWakeEnabled;
   doc["offline_wake_ready"] = OfflineWake::ready();
   doc["offline_wake_listening"] = OfflineWake::listening();
+  doc["offline_wake_active"] = OfflineWake::listenerActive();
   doc["offline_wake_word"] = OfflineWake::wakeWord();
   JsonArray events = doc["events"].to<JsonArray>();
   const size_t first = (runtimeEventHead + RUNTIME_EVENT_COUNT - runtimeEventSize) % RUNTIME_EVENT_COUNT;
@@ -4212,6 +4215,7 @@ void serviceConfigPortal() {
 
 void setup() {
   using namespace CloudDevice;
+  TlsMemory::begin();
   Serial.begin(SERIAL_BAUD);
   delay(350);
   RobotControls::begin();
@@ -4424,7 +4428,7 @@ void loop() {
     traceRuntime("focus_phase", announcement);
     OfflineWake::resume();
   }
-  if (!busy && !conversation.active() && !pendingWebRecording && PersonalProfile::ready() &&
+  if (!busy && !conversation.active() && !FullMusic::playing() && !pendingWebRecording && PersonalProfile::ready() &&
       !RobotControls::talkPressed() && !RobotControls::abortRequested() &&
       WiFi.status() == WL_CONNECTED && !settings.deviceToken.isEmpty() &&
       (profileSyncRequested || !profileSyncConfirmed || profileSyncedRevision != PersonalProfile::revision()) &&

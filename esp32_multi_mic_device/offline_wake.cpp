@@ -316,6 +316,7 @@ bool enabled() { return requestedEnabled || CustomWake::enabled(); }
 bool listening() {
   return ready() && enabled() && !suspended && currentlyListening;
 }
+bool listenerActive() { return ready() && enabled() && !suspended; }
 const char *modelId() { return selectedOption->id; }
 const char *wakeWord() { return CustomWake::enabled() ? CustomWake::label() : selectedOption->label; }
 const char *lastError() { return errorText.c_str(); }
