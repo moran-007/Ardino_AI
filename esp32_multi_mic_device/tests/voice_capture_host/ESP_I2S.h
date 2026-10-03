@@ -32,7 +32,7 @@ inline esp_err_t i2s_channel_read(i2s_chan_handle_t handle, void *out, size_t wa
         ? static_cast<int32_t>(FakeHardware::rightSampleAt(cursor + i)) * 65536 : 0;
   }
   cursor += frames;
-  if (!port) fakeMillis += static_cast<uint32_t>(frames * 1000 / 16000);
+  if (!port) fakeMillis += static_cast<uint32_t>(frames * 1000 / (FakeHardware::portRate[port] ? FakeHardware::portRate[port] : 16000));
   *read = frames * 2 * sizeof(int32_t) - (FakeHardware::malformedPort == port ? 1 : 0);
   return ESP_OK;
 }
@@ -44,7 +44,8 @@ class I2SClass {
     auto &pins = FakeHardware::portPins[port_];
     pins[0]=bclk; pins[1]=ws; pins[2]=dout; pins[3]=din;
   }
-  bool begin(int, uint32_t, int, int) {
+  bool begin(int, uint32_t rate, int, int) {
+    FakeHardware::portRate[port_] = rate;
     ++FakeHardware::beginCalls[port_];
     return FakeHardware::portActive[port_] =
         !(FakeHardware::failI2sBegin || (port_ && FakeHardware::failThirdBegin));
@@ -58,6 +59,7 @@ class I2SClass {
   i2s_chan_handle_t rxChan() { return reinterpret_cast<void *>(port_ + 1); }
   size_t write(const void *, size_t length) {
     if (FakeHardware::failI2sWrite) return 0;
+    length = min(length, FakeHardware::maxWriteBytes);
     FakeHardware::writtenFrames += length / (2 * sizeof(int32_t));
     return length;
   }

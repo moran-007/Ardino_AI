@@ -25,7 +25,7 @@ details{border:1px solid var(--line);border-radius:10px;padding:14px;margin:16px
 </style></head><body>
 <header><div><h1>机器人控制台</h1><p>管理屏幕、相册和日常提醒</p></div><form method='post' action='/logout'><button class='secondary' type='submit'>退出登录</button></form></header>
 <div class='shell'><nav aria-label='控制台分区'>
-<a href='#home' data-nav='home'>首页</a><a href='#display' data-nav='display'>屏幕与相册</a><a href='#expressions' data-nav='expressions'>表情库</a><a href='#reminders' data-nav='reminders'>提醒事项</a><a href='#focus' data-nav='focus'>番茄钟</a><a href='#personal' data-nav='personal'>个人记忆</a><a href='#voice' data-nav='voice'>语音与音量</a><a href='#network' data-nav='network'>联网与天气</a><a href='#system' data-nav='system'>设备与更新</a><a href='#diagnostics' data-nav='diagnostics'>运行记录</a>
+<a href='#home' data-nav='home'>首页</a><a href='#music' data-nav='music'>音乐与歌词</a><a href='#display' data-nav='display'>屏幕与相册</a><a href='#expressions' data-nav='expressions'>表情库</a><a href='#reminders' data-nav='reminders'>提醒事项</a><a href='#focus' data-nav='focus'>番茄钟</a><a href='#personal' data-nav='personal'>个人记忆</a><a href='#voice' data-nav='voice'>语音与音量</a><a href='#network' data-nav='network'>联网与天气</a><a href='#system' data-nav='system'>设备与更新</a><a href='#diagnostics' data-nav='diagnostics'>运行记录</a>
 </nav><main>
 )HTML";
 
@@ -33,7 +33,7 @@ static const char ADMIN_NAV_SCRIPT[] PROGMEM = R"HTML(
 <script>
 window.activeAdminPanel='home';let networkOpened=false;
 function showAdminPanel(name){
-  const names=['home','display','expressions','reminders','focus','personal','voice','network','system','diagnostics'];
+  const names=['home','music','display','expressions','reminders','focus','personal','voice','network','system','diagnostics'];
   if(!names.includes(name))name='home';window.activeAdminPanel=name;
   document.querySelectorAll('[data-panel]').forEach(panel=>panel.hidden=panel.dataset.panel!==name);
   document.querySelectorAll('[data-nav]').forEach(link=>{if(link.dataset.nav===name)link.setAttribute('aria-current','page');else link.removeAttribute('aria-current');});

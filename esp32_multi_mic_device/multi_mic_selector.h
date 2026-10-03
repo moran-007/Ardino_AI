@@ -34,7 +34,7 @@ class Selector {
     blocks_ = 0;
     for (uint8_t c = 0; c < 3; ++c) { rms_[c] = peak_[c] = 0; }
   }
-  uint8_t update(const Stereo32 *primary, const Stereo32 *secondary, size_t frames, bool allowSwitch = true) {
+  uint8_t update(const Stereo32 *primary, const Stereo32 *secondary, size_t frames, bool allowSwitch = true, uint32_t sampleRate = 16000) {
     uint8_t best = selected_;
     for (uint8_t c = 0; c < 3; ++c) {
       rms_[c] = peak_[c] = 0;
@@ -65,7 +65,7 @@ class Selector {
             static_cast<uint32_t>(rms_[selected_ - 1]) * 18U) {
       if (candidate_ != best) { candidate_ = best; candidateSamples_ = 0; }
       candidateSamples_ += static_cast<uint32_t>(frames);
-      if (candidateSamples_ >= SWITCH_HOLD_SAMPLES) {
+      if (candidateSamples_ >= sampleRate / 4) {
         selected_ = best;
         candidate_ = 0;
         candidateSamples_ = 0;

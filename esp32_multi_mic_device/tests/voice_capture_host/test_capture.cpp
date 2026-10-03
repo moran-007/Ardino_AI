@@ -39,6 +39,7 @@ void reset() {
   failReadAt=failFileWriteAfter=abortAfterSamples=releaseAfterSamples=maxReadFrames=SIZE_MAX;
   failOpen=failI2sBegin=failI2sWrite=abortNow=failNs=failVad=false;
   talkDown=true;nsDivisor=1;vadFrames.clear();sampleAt={};
+  maxWriteBytes = SIZE_MAX;
   rightSampleAt={};thirdSampleAt={};thirdInputSamples=thirdReadCalls=0;
   thirdFailReadAt=SIZE_MAX;failThirdBegin=false;malformedPort=-1;
   for(int port=0;port<2;++port){beginCalls[port]=endCalls[port]=0;}
@@ -424,6 +425,43 @@ void multiMicrophoneChecks() {
           "mode change kept stale calibrated baseline");
   std::cout<<"multi-mic: single/right/third/auto/partial/error/release/probe/freeze checks passed\n";
 }
+void musicHardwareChecks() {
+  using namespace FakeHardware;
+  reset();
+  sampleAt = [](size_t n)->int16_t { return static_cast<int16_t>(3000 * std::sin(n * 2 * PI * 1000 / 48000)); };
+  thirdSampleAt = sampleAt;
+  require(VoiceInput::configureMicrophones(7,3) && VoiceInput::begin(), "music hardware setup failed");
+  require(VoiceInput::setMusicRate(true) && VoiceInput::hardwareSampleRate() == 48000 && portRate[0] == 48000 && portRate[1] == 48000,
+      "music changed only one shared-clock controller");
+  int16_t mono[160]; inputSamples = thirdInputSamples = 0;
+  require(VoiceInput::readMicrophoneMono16(mono, 160) && inputSamples == 480 && thirdInputSamples == 480,
+      "WakeNet did not receive 16 kHz frames from 48 kHz RX");
+  require(!VoiceInput::ambientNoiseReady(), "speaker playback calibrated room noise");
+  double speechEnergy = 0;
+  for (int block=0;block<10;++block) { require(VoiceInput::readMicrophoneMono16(mono,160), "resampled speech read failed");
+    if(block>1)for(auto value:mono)speechEnergy += double(value)*value; }
+  int16_t pcm[480] = {};
+  require(VoiceInput::playMusicChunk(pcm,480) == 480 && !VoiceInput::playAlarmChunk(pcm,480), "music TX bound/rate guard failed");
+  maxWriteBytes = 100 * 8;
+  require(VoiceInput::playMusicChunk(pcm,480) == 100, "partial I2S TX lost accepted frame count");
+  maxWriteBytes = SIZE_MAX;
+  VoiceInput::AudioStats stats;
+  require(!capture(stats) && stats.fileBytes == 0 && files.empty(), "capture started on music clock");
+  require(VoiceInput::setMusicRate(false) && portRate[0] == 16000 && portRate[1] == 16000, "foreground clock restore missed MIC3");
+  sampleAt = [](size_t n)->int16_t { return static_cast<int16_t>(3000 * std::sin(n * 2 * PI * 10000 / 48000)); };
+  thirdSampleAt = sampleAt;
+  require(VoiceInput::setMusicRate(true), "second music clock start failed");
+  double aliasEnergy = 0;
+  for (int block=0;block<10;++block) { require(VoiceInput::readMicrophoneMono16(mono,160), "resampled high-frequency read failed");
+    if(block>1)for(auto value:mono)aliasEnergy += double(value)*value; }
+  require(aliasEnergy < speechEnergy * .0001, "production microphone path aliased 10 kHz into speech band");
+  require(VoiceInput::setMusicRate(false), "final music clock restore failed");
+  failThirdBegin = true;
+  require(!VoiceInput::setMusicRate(true) && VoiceInput::hardwareSampleRate() == 16000, "failed 48 kHz switch did not roll back clock");
+  failThirdBegin = false;
+  require(VoiceInput::setMusicRate(false) && VoiceInput::ready(), "failed clock switch could not recover audio");
+  std::cout << "music: shared 48/16 kHz clocks, native 3:1 RX, production FIR and foreground guards passed\n";
+}
 void microphoneConfigChecks() {
   using namespace FakePreferences;
   reset();values.clear();failBegin=failWrite=false;
@@ -470,6 +508,6 @@ void microphoneConfigChecks() {
   std::cout<<"multi-mic: commands, persistence and invalid/NVS failure checks passed\n";
 }
 }
-int main(){try{ambientChecks();noSpeechChecks();audioChecks();storageTimingChecks();errorAndControlChecks();conversationChecks();manualRecordingChecks();memoryRecordingChecks();multiMicrophoneChecks();microphoneConfigChecks();
+int main(){try{ambientChecks();noSpeechChecks();audioChecks();storageTimingChecks();errorAndControlChecks();conversationChecks();manualRecordingChecks();memoryRecordingChecks();multiMicrophoneChecks();microphoneConfigChecks();musicHardwareChecks();
 std::cout<<"PASS: "<<checks<<" production capture/session checks (NS/VAD hardware faked)\n";
 return 0;}catch(const std::exception &error){std::cerr<<"FAIL after "<<checks<<": "<<error.what()<<'\n';return 1;}}

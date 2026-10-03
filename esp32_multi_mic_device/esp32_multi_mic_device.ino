@@ -18,6 +18,8 @@ using SecureClient = WiFiClientSecure;
 #include "alarm_manager.h"
 #include "web_alarm_music.h"
 #include "music_player.h"
+#include "full_music_player.h"
+#include "web_music_ui.h"
 #include "bounded_audio_download.h"
 #include "conversation_session.h"
 #include "firmware_update.h"
@@ -129,7 +131,7 @@ String profileSyncMessage = "等待联网同步";
 String pendingFocusAnnouncement;
 uint32_t lastFocusDisplayMs = 0;
 constexpr char DEFAULT_SERVER_URL[] = "https://voice.bsnlch.xyz";
-constexpr char FIRMWARE_VERSION[] = "2.0.0";
+constexpr char FIRMWARE_VERSION[] = "2.1.0";
 constexpr char OTA_MANIFEST_PATH[] = "/voice-api/v1/firmware/manifest";
 constexpr char AMAP_API_HOST[] = "restapi.amap.com";
 constexpr bool DIALOGUE_TRANSPORT_HTTP = true;
@@ -572,6 +574,11 @@ String baseFromRequestUrl(const String &url) {
   return normalizedUrl(url.substring(0, pathStart));
 }
 
+bool cloudMusicHeld = false;
+bool alarmMusicHeld = false;
+bool alarmPreview = false;
+uint32_t alarmPreviewStarted = 0;
+bool loadAlarmMusic();
 void closeCloudConnection() {
   cloudHttp.setReuse(false);
   cloudHttp.end();
@@ -583,6 +590,7 @@ void closeCloudConnection() {
 }
 
 bool beginCloudRequest(const String &url) {
+  if (!cloudMusicHeld) { if (!FullMusic::hold()) return false; cloudMusicHeld = true; }
   const String baseUrl = baseFromRequestUrl(url);
   if (!cloudConnectionBaseUrl.isEmpty() && cloudConnectionBaseUrl != baseUrl) {
     closeCloudConnection();
@@ -590,20 +598,25 @@ bool beginCloudRequest(const String &url) {
 
   cloudHttp.setReuse(true);
   if (url.startsWith("https://")) {
-    if (!clockReady) return false;
+    if (!clockReady) { FullMusic::release(); cloudMusicHeld = false; return false; }
     cloudSecureClient.setCACert(DIGICERT_GLOBAL_ROOT_G2);
     cloudSecureClient.setHandshakeTimeout(8);
     cloudConnectionBaseUrl = baseUrl;
-    return cloudHttp.begin(cloudSecureClient, url);
+    const bool ok = cloudHttp.begin(cloudSecureClient, url);
+    if (!ok) { FullMusic::release(); cloudMusicHeld = false; }
+    return ok;
   }
   cloudConnectionBaseUrl = baseUrl;
-  return cloudHttp.begin(cloudPlainClient, url);
+  const bool ok = cloudHttp.begin(cloudPlainClient, url);
+  if (!ok) { FullMusic::release(); cloudMusicHeld = false; }
+  return ok;
 }
 
 void endCloudRequest(bool keepAlive = true) {
   cloudHttp.end();
   lastCloudActivityMs = millis();
-  if (!keepAlive) closeCloudConnection();
+  if (!keepAlive || cloudMusicHeld) closeCloudConnection();
+  if (cloudMusicHeld) { FullMusic::release(); cloudMusicHeld = false; }
 }
 
 bool migrateLegacyLanSettings() {
@@ -929,6 +942,7 @@ void addAuthHeaders(HTTPClient &http) {
 String statusJson(const String &message = "") {
   JsonDocument doc;
   doc["wifi"] = WiFi.status() == WL_CONNECTED ? "connected" : "disconnected";
+  doc["hardware_sample_rate"] = VoiceInput::hardwareSampleRate();
   doc["ip"] = WiFi.status() == WL_CONNECTED ? WiFi.localIP().toString() : "";
   doc["server_url"] = settings.serverUrl;
   doc["active_server_url"] = activeServerUrl;
@@ -1997,6 +2011,8 @@ void registerMicrophoneRoutes() {
     } else if (action != "probe") {
       phoneWeb.send(422, "text/plain; charset=utf-8", "麦克风操作无效。"); return;
     }
+    FullMusic::Foreground musicGuard;
+    if (!musicGuard.ready()) { phoneWeb.send(503, "text/plain", "音乐连接尚未关闭，请稍后重试"); return; }
     OfflineWake::suspend();
     busy = true;
     String message;
@@ -2151,6 +2167,67 @@ void registerCompanionRoutes() {
     if (ok && action != "train") OfflineWake::resume();
     phoneWeb.sendHeader("Cache-Control", "no-store");
     phoneWeb.send(ok ? (action == "train" ? 202 : 200) : 422, "application/json; charset=utf-8", CustomWake::toJson());
+  });
+}
+
+void registerMusicRoutes() {
+  phoneWeb.on("/music/status", HTTP_GET, []() {
+    if (!WebAdmin::requireSession(phoneWeb)) return;
+    phoneWeb.sendHeader("Cache-Control", "no-store"); phoneWeb.send(200, "application/json; charset=utf-8", FullMusic::statusJson());
+  });
+  phoneWeb.on("/music/control", HTTP_POST, []() {
+    if (!WebAdmin::requireSession(phoneWeb)) return;
+    JsonDocument doc;
+    if (phoneWeb.arg("plain").length() > 1024 || deserializeJson(doc, phoneWeb.arg("plain"))) { phoneWeb.send(422); return; }
+    const String action = doc["action"] | "", value = doc["value"] | "";
+    bool ok = true;
+    if (action == "play") ok = FullMusic::play(value);
+    else if (action == "search") ok = FullMusic::search(value);
+    else if (action == "pause") FullMusic::pause();
+    else if (action == "resume") FullMusic::resume();
+    else if (action == "stop") FullMusic::stop();
+    else if (action == "next") FullMusic::next();
+    else if (action == "previous") FullMusic::next(true);
+    else if (action == "playlist") FullMusic::selectPlaylist(value);
+    else if (action == "volume") { const int volume = value.toInt(); if (volume < 0 || volume > 100) ok = false;
+      else { settings.volumePercent = volume; settings.volumePotentiometer = false;
+        VoiceInput::usePotentiometerVolume(false); VoiceInput::setPlaybackVolume(volume); ok = saveSettings(); } }
+    else ok = false;
+    phoneWeb.send(ok ? 200 : 422, "application/json", ok ? FullMusic::statusJson() : "{\"error\":\"音乐操作无效\"}");
+  });
+  auto proxy = [](bool ticket) {
+    if (!WebAdmin::requireSession(phoneWeb)) return;
+    if (busy || pendingWebRecording || conversation.active() || AlarmManager::ringing() || CustomWake::trainingActive()) { phoneWeb.send(409, "text/plain", "助手处理任务中，请稍后重试"); return; }
+    JsonDocument doc;
+    const String source = phoneWeb.arg("plain");
+    if (source.length() > 4096 || deserializeJson(doc, source)) { phoneWeb.send(422); return; }
+    String path, method = "POST", body;
+    if (ticket) { path = "/music/upload-tickets"; serializeJson(doc, body); }
+    else {
+      path = doc["path"] | ""; method = doc["method"] | "GET";
+      if (!(path == "/music" || path.startsWith("/music?") || path.startsWith("/music/")) || path.indexOf("..") >= 0 ||
+          path.indexOf(":") >= 0 || path.indexOf("\\") >= 0 || path.indexOf("/pcm") >= 0 || path.indexOf("browser-upload") >= 0 ||
+          (method != "GET" && method != "POST" && method != "DELETE")) { phoneWeb.send(422); return; }
+      if (!doc["data"].isNull()) serializeJson(doc["data"], body);
+    }
+    String response; int code; FullMusic::request(path, method, body, response, code);
+    phoneWeb.send(code > 0 ? code : 502, "application/json; charset=utf-8", response);
+  };
+  phoneWeb.on("/music/cloud", HTTP_POST, [proxy]() { proxy(false); });
+  phoneWeb.on("/music/upload-ticket", HTTP_POST, [proxy]() { proxy(true); });
+  phoneWeb.on("/alarm/music/preview", HTTP_POST, []() {
+    if (!WebAdmin::requireSession(phoneWeb)) return;
+    if (busy || conversation.active() || AlarmManager::ringing() || pendingWebRecording || alarmPreview) { phoneWeb.send(409); return; }
+    if (!FullMusic::hold()) { phoneWeb.send(503); return; }
+    busy = true; const bool ok = loadAlarmMusic(); busy = false;
+    alarmPreview = ok; alarmPreviewStarted = millis();
+    if (!ok) FullMusic::release();
+    phoneWeb.send(ok ? 200 : 502, "application/json", ok ? "{\"ok\":true}" : "{\"error\":\"铃声试听失败\"}");
+  });
+  phoneWeb.on("/alarm/music/preview/stop", HTTP_POST, []() {
+    if (!WebAdmin::requireSession(phoneWeb)) return;
+    if (alarmPreview) { alarmPreview = false; MusicPlayer::stop(); FullMusic::release(); }
+    phoneWeb.send(200, "application/json", "{\"ok\":true}");
   });
 }
 
@@ -2412,6 +2489,7 @@ void startPhoneWeb() {
               "}catch(e){document.getElementById('flow-error').textContent='状态读取失败：'+e;}"
               "setTimeout(refreshFlow,3000)}refreshFlow();</script>");
     page += FPSTR(EXPRESSION_SETTINGS_PAGE);
+    MusicWeb::append(page);
     page += FPSTR(ADMIN_NAV_SCRIPT);
     page.finish();
   });
@@ -3164,6 +3242,7 @@ void startPhoneWeb() {
     }
     phoneWeb.send(404, "text/plain; charset=utf-8", "Not found");
   });
+  registerMusicRoutes();
   registerCompanionRoutes();
   registerMicrophoneRoutes();
   phoneWeb.begin();
@@ -3275,17 +3354,28 @@ void handleLocalNaturalLanguage(const String &jobId, const String &userText) {
   if (lastLocalCommandJobId != jobId) {
     lastLocalCommandJobId = jobId;
     currentLocalResult = ReminderCommands::Result();
-    const auto profileResult = PersonalProfile::handleNaturalLanguage(userText);
+    String musicMessage;
+    bool musicVolumeChanged = false;
+    const bool musicHandled = !AlarmManager::ringing() &&
+        !(FocusTimer::active() && userText == "暂停") && FullMusic::handleVoice(userText, musicMessage, &musicVolumeChanged);
+    if (musicVolumeChanged) {
+      settings.volumePercent = VoiceInput::playbackVolume(); settings.volumePotentiometer = false;
+      if (!saveSettings()) musicMessage += " 当前已生效，但未能保存，重启后会恢复原设置。";
+    }
+    const auto profileResult = musicHandled ? PersonalProfile::CommandResult() : PersonalProfile::handleNaturalLanguage(userText);
     if (profileResult.changed) { profileSyncRequested = true; profileSyncConfirmed = false; nextProfileSyncMs = 0; }
-    if (!profileResult.handled) {
+    if (!musicHandled && !profileResult.handled) {
       const auto observed = PersonalProfile::observe(userText);
       if (observed.changed) { profileSyncRequested = true; profileSyncConfirmed = false; nextProfileSyncMs = 0; }
     }
-    const auto focusResult = profileResult.handled ? FocusTimer::CommandResult() : FocusTimer::handleNaturalLanguage(userText);
+    const auto focusResult = musicHandled || profileResult.handled ? FocusTimer::CommandResult() : FocusTimer::handleNaturalLanguage(userText);
     serviceFocusTimer();
-    const RobotPhoto::CommandResult photoResult = profileResult.handled || focusResult.handled ?
+    const RobotPhoto::CommandResult photoResult = musicHandled || profileResult.handled || focusResult.handled ?
         RobotPhoto::CommandResult() : RobotPhoto::handleNaturalLanguage(userText);
-    if (profileResult.handled || focusResult.handled) {
+    if (musicHandled) {
+      currentLocalResult.handled = true; currentLocalResult.message = musicMessage;
+      historyAssistantText = musicMessage; traceRuntime("music_command", musicMessage);
+    } else if (profileResult.handled || focusResult.handled) {
       currentLocalResult.handled = true;
       currentLocalResult.message = profileResult.handled ? profileResult.message : focusResult.message;
       historyAssistantText = currentLocalResult.message;
@@ -3534,6 +3624,8 @@ class WakeListeningGuard {
 
 void runDialogue(bool pushToTalk = true, bool followUp = false, bool manual = false) {
   if (busy) return;
+  FullMusic::Foreground musicGuard;
+  if (!musicGuard.ready()) { traceRuntime("music_suspend_failed", "音乐连接未关闭，本轮未开始录音", true); return; }
   RobotInteraction::stop();
   if (!followUp) conversation.start(!manual && VoiceCapture::settings().continuous);
   RobotDisplay::setVoiceSource(!pushToTalk && !manual);
@@ -3725,6 +3817,8 @@ void reportOtaProgress(const String &message) {
 
 void performOtaUpdate(bool installAvailable) {
   if (busy) return;
+  FullMusic::Foreground musicGuard;
+  if (!musicGuard.ready()) { traceRuntime("music_suspend_failed", "音乐连接未关闭，稍后重试更新", true); return; }
   conversation.cancel();
   RobotServos::release();
   Serial.printf("[OTA] 开始前 loop 栈余量：%u 字节。\n",
@@ -3797,6 +3891,8 @@ void processConsole() {
           String command = serialLine.length() > 4 ? serialLine.substring(5) : "status";
           command.trim();
           String message;
+          FullMusic::Foreground musicGuard;
+          if (!musicGuard.ready()) { Serial.println(F("[音乐] 连接尚未关闭，请稍后检测麦克风。")); serialLine = ""; return; }
           OfflineWake::suspend();
           VoiceInput::setAmbientTracking(false);
           busy = true;
@@ -3967,6 +4063,9 @@ bool processAlarmClock() {
   const time_t now = time(nullptr);
   AlarmManager::Entry fired;
   if (!busy && AlarmManager::poll(now, fired)) {
+    if (alarmPreview) { alarmPreview = false; MusicPlayer::stop(); FullMusic::release(); }
+    alarmMusicHeld = FullMusic::hold();
+    if (!alarmMusicHeld) { FullMusic::pause(); traceRuntime("music_suspend_failed", "音乐连接未关闭，本次延后响铃", true); return true; }
     alarmRingStartedAtMs = millis();
     lastAlarmToneAtMs = 0;
     alarmTalkWasPressed = RobotControls::talkPressed();
@@ -3980,10 +4079,12 @@ bool processAlarmClock() {
     traceRuntime(loaded ? "alarm_music_ready" : "alarm_music_fallback", MusicPlayer::status());
   }
   if (!AlarmManager::ringing()) {
-    if (MusicPlayer::available()) { MusicPlayer::stop(); returnToHomeDisplay(); }
+    if (alarmMusicHeld) { alarmMusicHeld = false; FullMusic::release(); }
+    if (!alarmPreview && MusicPlayer::available()) { MusicPlayer::stop(); returnToHomeDisplay(); }
     alarmTalkWasPressed = RobotControls::talkPressed();
     return false;
   }
+  if (!alarmMusicHeld) { alarmMusicHeld = FullMusic::hold(); if (!alarmMusicHeld) return true; }
 
   const bool talkPressed = RobotControls::talkPressed();
   if (!busy && OfflineWake::consumeDetected()) {
@@ -4178,6 +4279,9 @@ void setup() {
   } else {
     startConfigPortal(settings.wifiSsid.isEmpty() ? "尚未配置 Wi-Fi" : "Wi-Fi 连接失败");
   }
+  closeCloudConnection();
+  if (!FullMusic::begin(baseUrlWithScheme(settings.serverUrl, true), settings.deviceId, settings.deviceToken, DIGICERT_GLOBAL_ROOT_G2))
+    traceRuntime("music_init_failed", "完整音乐缓存或任务初始化失败", true);
   publishStatus("ready");
   setState(audioReady ? DeviceState::Idle : DeviceState::Error);
   if (audioReady) {
@@ -4204,9 +4308,10 @@ void setup() {
 
 void loop() {
   using namespace CloudDevice;
-  VoiceInput::setAmbientTracking(!busy && !conversation.active() && !AlarmManager::ringing());
+  FullMusic::configure(baseUrlWithScheme(settings.serverUrl, true), settings.deviceId, settings.deviceToken);
+  VoiceInput::setAmbientTracking(!busy && !conversation.active() && !AlarmManager::ringing() && !FullMusic::playing());
   static uint32_t lastAmbientPoll = 0;
-  if (!busy && !conversation.active() && !AlarmManager::ringing() && !OfflineWake::listening() &&
+  if (!busy && !conversation.active() && !AlarmManager::ringing() && !FullMusic::playing() && !OfflineWake::listening() &&
       millis() - lastAmbientPoll >= 40) {
     int16_t samples[160]; lastAmbientPoll = millis();
     VoiceInput::readMicrophoneMono16(samples, 160, 20);
@@ -4270,6 +4375,7 @@ void loop() {
                                                    : WEATHER_RETRY_INTERVAL_MS);
   }
   if (!busy && !weatherRefreshRunning && WiFi.status() == WL_CONNECTED &&
+      !FullMusic::playing() &&
       static_cast<int32_t>(millis() - nextWeatherRefreshAtMs) >= 0) {
     weatherRefreshRequested = false;
     if (!startWeatherRefresh()) {
@@ -4294,6 +4400,8 @@ void loop() {
     return;
   }
   if (!busy && !conversation.active() && !pendingWebRecording && CustomWake::trainingPending()) {
+    FullMusic::Foreground musicGuard;
+    if (!musicGuard.ready()) return;
     RobotInteraction::stop();
     busy = true;
     VoiceInput::setAmbientTracking(false);
@@ -4307,6 +4415,8 @@ void loop() {
     return;
   }
   if (!busy && !conversation.active() && !pendingWebRecording && !pendingFocusAnnouncement.isEmpty()) {
+    FullMusic::Foreground musicGuard;
+    if (!musicGuard.ready()) return;
     const String announcement = pendingFocusAnnouncement;
     pendingFocusAnnouncement = "";
     OfflineWake::suspend();
@@ -4331,6 +4441,8 @@ void loop() {
     conversation.cancel();
     RobotControls::consumeAbortRequest();
     if (wasActive) OfflineWake::resume();
+    else if (alarmPreview) { alarmPreview = false; MusicPlayer::stop(); FullMusic::release(); }
+    else FullMusic::stop();
   } else if (!busy && pendingWebRecording) {
     pendingWebRecording = false;
     runDialogue(false, false, true);
@@ -4344,5 +4456,12 @@ void loop() {
   }
   previousTalkPressed = RobotControls::talkPressed();
   if (!busy && RobotControls::abortRequested()) RobotControls::consumeAbortRequest();
-  delay(8);
+  if (!busy && !conversation.active()) {
+    if (alarmPreview) {
+      if (millis() - alarmPreviewStarted >= 15000 || RobotControls::abortRequested()) {
+        alarmPreview = false; MusicPlayer::stop(); FullMusic::release();
+      } else MusicPlayer::tick();
+    } else FullMusic::tick();
+  }
+  delay(FullMusic::playing() ? 1 : 8);
 }

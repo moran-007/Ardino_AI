@@ -92,6 +92,8 @@ void setConversation(const String &question, const String &answer);
 void clearConversation();
 void setDialogueExpression(uint8_t id);
 void setFocusStatus(bool active, const String &status);
+void setMusicStatus(bool active, const String &title, const String &artist, const String &state,
+                    const String &lyric, const String &nextLyric, uint64_t positionMs, uint64_t durationMs);
 void setWeather(const String &city, float temperatureC, const String &condition, bool valid);
 void setForecast(const String dayLabels[3], const String conditions[3],
                  const int highC[3], const int lowC[3], size_t count);

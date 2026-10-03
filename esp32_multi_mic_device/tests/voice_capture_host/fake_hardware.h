@@ -27,6 +27,7 @@ inline size_t releaseAfterSamples = std::numeric_limits<size_t>::max();
 inline bool failOpen = false;
 inline bool failI2sBegin = false;
 inline bool failI2sWrite = false;
+inline size_t maxWriteBytes = SIZE_MAX;
 inline bool abortNow = false;
 inline bool talkDown = true;
 inline bool mutexTaken = false;
@@ -42,6 +43,7 @@ inline size_t thirdFailReadAt = std::numeric_limits<size_t>::max();
 inline bool failThirdBegin = false;
 inline int malformedPort = -1;
 inline bool portActive[2] = {};
+inline uint32_t portRate[2] = {};
 inline size_t beginCalls[2] = {}, endCalls[2] = {};
 inline int portPins[2][4] = {};
 }

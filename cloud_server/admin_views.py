@@ -56,6 +56,7 @@ def page_shell(content: str, title="ESP32 语音服务", *, active="", csrf="", 
         links = (("overview", "/admin/", "用量总览"), ("devices", "/admin/devices", "设备 KEY"),
                  ("api-keys", "/admin/api-keys", "API Key 配置"), ("firmware", "/admin/firmware", "固件版本"),
                  ("billing", "/admin/billing", "计费与费用"), ("alarm-music", "/admin/alarm-music", "闹钟音乐"),
+                 ("music", "/admin/music", "音乐库"),
                  ("settings", "/admin/settings", "服务设置"))
         nav = "".join(f'<a href="{url}" aria-current="{"page" if key == active else "false"}">{label}</a>' for key, url, label in links)
         lock = f'<form method="post" action="/admin/lock">{csrf_input(csrf)}<button type="submit">锁定页面</button></form>'

@@ -1,12 +1,39 @@
 # ESP32 云端语音服务
 
+## 完整音乐播放器（多麦克风 2.1.0）
+
+`/admin/music` 管理完整歌曲、同步歌词和全部用户歌单，管理员可查看用户私有歌曲。原始 MP3 / PCM WAV 保存在 `VOICE_DATA_DIR/music-library/<id>/source`；SQLite 保存元数据、LRC 时间轴、设备归属和歌单顺序。歌曲名、歌手依次参考用户填写、音频标签、LRC 标签和文件名；音频类型按内容识别，扩展名错写也可识别。歌词支持 UTF-8/BOM、UTF-16、GB18030，以及一行多时间标签、重复时间标签和 offset。
+
+完整音频没有固定文件大小、时长或音乐数量上限，不截取成短片段；限制为实际磁盘容量、网络和服务器处理能力，写入时保留约 256 MB 磁盘余量，失败或取消清理临时文件。LRC 最多 1 MB，单句最多 256 字符，设备分批读取 100 句。上传采用增量 multipart 解析，64 KiB 块落盘，不将整首音乐载入服务器或设备内存。Nginx 仅 `/admin/music/upload` 与 `/voice-api/v1/music/browser-upload` 配置 `client_max_body_size 0` 和关闭请求缓存，其他接口保留原有限额。
+
+设备网页先向已鉴权 ESP32 申请一次性上传凭据，再由浏览器直接上传云端。凭据 10 分钟内开始上传有效，绑定精确网页 Origin、设备和可选歌词目标；上传开始后不因大文件传输超过 10 分钟而到期。永久设备令牌不提供给浏览器。管理员上传需要会话与 `X-CSRF-Token`，服务器仅为合法上传来源提供 CORS。歌曲可全库搜索、分页读取，用户只能访问共用歌曲和自己的歌曲，并管理自己的歌单。
+
+完整歌曲实时由 FFmpeg 解码为 **48 kHz / 16 位 / 单声道 PCM**，保留原始音乐，设备不额外进行有损转码。单只 MAX98357A / 喇叭使用单声道；设备按实际输出采样数推进歌词，网络缓冲停顿不会推进。PCM 采用未知长度连续流；音乐客户端使用 HTTP/1.0 请求和关闭复用，经代理移除 chunk framing，读到真正的连接结束。`offset_bytes` 是偶数、64 位 PCM 偏移，恢复时带解码预滚，时长字段仅作元数据估计。最多四路服务器解码，每个设备一条；断开或取消回收子进程，输出管道有界。语音及闹钟接口仍使用原 16 kHz。
+
+设备令牌鉴权接口（前缀 `/voice-api/v1`）：
+
+| 接口 | 用途 |
+| --- | --- |
+| `GET /music?q=&cursor=&limit=` / `GET /music/{id}` | 搜索、分页目录 / 单曲元数据 |
+| `GET /music/{id}/pcm?offset_bytes=` | 连续 PCM 流，不缓存整首解码文件 |
+| `GET /music/{id}/lyrics?cursor=&limit=` | 同步歌词分页 |
+| `GET /music/queue?playlist_id=&current=&direction=next/previous` | 按歌单或目录顺序切曲并循环 |
+| `GET/POST /music/playlists` | 读取 / 创建自己的歌单 |
+| `GET/DELETE /music/playlists/{id}` | 分页读取 / 删除自己的歌单 |
+| `POST /music/playlists/{id}/tracks` / `DELETE /music/playlists/{id}/tracks/{track_id}` | 添加 / 移除歌单歌曲 |
+| `POST /music/upload-tickets` | 申请临时凭据，JSON `origin`、可选 `track_id` |
+| `POST /music/browser-upload` | 浏览器增量 FormData：`audio`、可选 `lyrics/title/artist`，或 `track_id+lyrics` 补歌词 |
+| `DELETE /music/{id}` | 删除自己的歌曲并移除歌单引用 |
+
+完整播放器测试及人工验收见仓库 `docs/音乐播放器测试文档.md`。音乐文件本身不提交公开 GitHub。短铃声上传仍适用下面的独立限制。
+
 ## 音乐闹钟与两条固件通道（2026-10-02）
 
 管理员页面 `/admin/alarm-music` 提供三首原创铃声和 MP3 / WAV 上传、试听、删除。共用库最多 12 首（含示例和各设备私有铃声）。MP3 源文件最多 20 MB，由 FFmpeg 截取前 30 秒并转为 16000 Hz / 16 位 / 单声道 PCM WAV；WAV 文件最多 1 MB、30 秒且须符合上述格式。服务器须安装 FFmpeg（Ubuntu：`apt-get install --no-install-recommends ffmpeg`），Nginx 的 `/admin/` 请求上限为 21 MB。转换单任务运行、超时 20 秒，拒绝损坏 MP3。
 
 设备鉴权接口：`GET /voice-api/v1/alarm-music`、`GET/PUT /voice-api/v1/alarm-music/selection`（JSON `{ "id": "morning" }`）、`GET /voice-api/v1/alarm-music/{id}/pcm`、`POST /voice-api/v1/alarm-music-upload?title=名称`（原始 WAV，最多 512 KiB）。设备各自最多上传 6 首，私有铃声不能被其他设备下载或选用。音乐和选择保存在 `VOICE_DATA_DIR/alarm-music`，不混入语音用量计费。
 
-ESP32 网页在浏览器解码、截取前 15 秒并转换，再通过设备临时文件分块转传；源文件最大 20 MB。这是短铃声功能，长歌曲和 MP3 播放器仍为后续规划。
+ESP32 闹钟网页在浏览器解码、截取前 15 秒并转换，再通过设备临时文件分块转传；源文件最大 20 MB。这是独立短铃声功能，完整歌曲使用上面的完整音乐库。
 
 OTA 清单和下载依据 `X-Hardware-ID` 分离：原单麦克风 `esp32s3-cloud-voice-v1` 存在 `firmware/`，多麦克风 `esp32s3-cloud-voice-multimic-v1` 存在 `firmware-multimic/`，分别保持当前发布指针。管理页同时显示两个通道；多麦克风 ZIP 上传需要表单 `channel=multi`，签名的硬件标识必须匹配。相同版本号的镜像也按硬件隔离。
 

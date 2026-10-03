@@ -73,6 +73,10 @@ bool ambientNoiseReady();
 uint32_t ambientSpeechThreshold();
 // Bounded music chunk: RX remains available to the wake listener during TX.
 bool playAlarmChunk(const int16_t *samples, size_t count);
+// Caller first pauses WakeNet and waits for its mic-release acknowledgement.
+bool setMusicRate(bool enabled);
+uint32_t hardwareSampleRate();
+size_t playMusicChunk(const int16_t *samples, size_t count);
 bool playPcmFile(const char *path);
 bool playPcmStream(Stream &input, size_t byteCount, bool buttonCanAbort = true);
 bool playTone(uint16_t frequencyHz = 880, uint16_t durationMs = 140, uint8_t volumePercent = 8);

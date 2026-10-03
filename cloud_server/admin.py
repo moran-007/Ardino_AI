@@ -31,6 +31,7 @@ from .config import Settings
 from .firmware import MAX_PACKAGE_BYTES, FirmwarePackageError
 from .model_catalog import PROVIDERS, ModelCatalogError, fetch_models
 from .service import VoiceService
+from .music_routes import install_music_admin
 
 PASSWORD_ITERATIONS = 310_000
 SESSION_COOKIE = "voice_admin_session"
@@ -173,7 +174,13 @@ def response_headers(response):
     response.headers["Cache-Control"] = "no-store"
     response.headers["X-Content-Type-Options"] = "nosniff"
     response.headers["X-Frame-Options"] = "DENY"
-    response.headers["Content-Security-Policy"] = "default-src 'none'; style-src 'unsafe-inline'; media-src 'self'; form-action 'self'; base-uri 'none'; frame-ancestors 'none'"
+    policy = "default-src 'none'; style-src 'unsafe-inline'; media-src 'self'; form-action 'self'; base-uri 'none'; frame-ancestors 'none'"
+    if isinstance(response, HTMLResponse) and re.search(rb'<script\b', response.body, re.I):
+        nonce = secrets.token_urlsafe(24)
+        response.body = re.sub(rb'<script\b', b'<script nonce="' + nonce.encode('ascii') + b'"', response.body, flags=re.I)
+        response.headers['Content-Length'] = str(len(response.body))
+        policy += f"; script-src 'nonce-{nonce}'; connect-src 'self'"
+    response.headers["Content-Security-Policy"] = policy
     return response
 
 
@@ -189,6 +196,8 @@ def install_admin_routes(app: FastAPI, base: Settings, vault: ConfigVault | None
         if not csrf:
             raise HTTPException(401, "管理员密码未验证")
         return token, csrf
+
+    install_music_admin(app, require_session, response_headers)
 
     def unlock_page(error: str = "") -> HTMLResponse:
         notice = f'<p class="bad">{html.escape(error)}</p>' if error else ""

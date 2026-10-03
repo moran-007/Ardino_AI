@@ -310,6 +310,9 @@ int main(){
       geometry(panel,rotation);
       Model focus;focus.scene=Scene::Idle;focus.focusActive=true;focus.focusStatus="专注 24:59\n第1轮 · 已完成0次";
       render(focus);saveFrame(std::string(panel==Panel::M200T_ST7789_240X320_7PIN?"large-r":"small-r")+std::to_string(rotation)+"-focus");
+      Model music;music.scene=Scene::Idle;music.musicActive=true;music.musicTitle="强军战歌";music.musicArtist="阎维文";
+      music.musicState="playing";music.musicLyric="听吧新征程号角吹响";music.musicNextLyric="强军目标召唤在前方";music.musicPositionMs=6000;music.musicDurationMs=114312;
+      render(music);saveFrame(std::string(panel==Panel::M200T_ST7789_240X320_7PIN?"large-r":"small-r")+std::to_string(rotation)+"-music");
     }
   }
   std::ofstream("controls.html")<<ADMIN_PAGE_HEAD<<"<section class='panel' data-panel='display'><h2>屏幕与相册</h2>"<<server.html<<"</section>"<<EXPRESSION_SETTINGS_PAGE

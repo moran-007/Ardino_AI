@@ -142,6 +142,9 @@ struct Model {
   bool hasDialogueExpression = false;
   bool focusActive = false;
   String focusStatus;
+  bool musicActive = false;
+  String musicTitle, musicArtist, musicState, musicLyric, musicNextLyric;
+  uint64_t musicPositionMs = 0, musicDurationMs = 0;
   uint64_t expressions = RobotExpressions::ALL;
   uint8_t previewId = 0;
   uint32_t previewUntilMs = 0;
@@ -1090,7 +1093,8 @@ void render(const Model &snapshot) {
   static bool lastVoice = false;
   if (voice && !lastVoice) voicePage = lastIdlePage ? lastIdlePage : PAGE_HOME;
   const bool focusPage = snapshot.focusActive && snapshot.scene == Scene::Idle && !preview && !setupVisible;
-  const uint8_t page = focusPage ? 0 : setupVisible ? 0 : preview ? PAGE_EXPRESSION : compactVoice ? voicePage :
+  const bool musicPage = snapshot.musicActive && snapshot.scene == Scene::Idle && !preview && !setupVisible && !focusPage;
+  const uint8_t page = musicPage || focusPage ? 0 : setupVisible ? 0 : preview ? PAGE_EXPRESSION : compactVoice ? voicePage :
                        snapshot.scene == Scene::Idle ? idlePage(snapshot, now) : 0;
   const bool photoPage = page == PAGE_PHOTO;
   const uint32_t photoRevision = photoPage ? RobotPhoto::revision() : 0;
@@ -1108,6 +1112,17 @@ void render(const Model &snapshot) {
     drawCenteredUtf8(headerHeight + textLineHeight + 8, "番茄钟", COLOR_CYAN);
     nextTextPageOffset = drawTextPage(snapshot.focusStatus, 0,
         headerHeight + textLineHeight * 3, max(1, (screenHeight - headerHeight) / textLineHeight - 4));
+  } else if (musicPage) {
+    const String state = snapshot.musicState == "playing" ? "播放中" : snapshot.musicState == "buffering" ? "缓冲中" :
+        snapshot.musicState == "paused" ? "已暂停" : snapshot.musicState == "suspended" ? "助手处理中" : "音乐";
+    drawCenteredUtf8(headerHeight + textLineHeight + 2, state, COLOR_CYAN);
+    const uint64_t seconds = snapshot.musicPositionMs / 1000;
+    const String position = String(static_cast<unsigned long>(seconds / 60)) + ":" +
+        (seconds % 60 < 10 ? "0" : "") + String(static_cast<unsigned long>(seconds % 60));
+    String content = snapshot.musicTitle + "\n" + snapshot.musicArtist + "\n" + position + "\n\n" +
+        (snapshot.musicLyric.isEmpty() ? String("纯音乐 / 等待歌词") : snapshot.musicLyric) + "\n" + snapshot.musicNextLyric;
+    nextTextPageOffset = drawTextPage(content, 0, headerHeight + textLineHeight * 2 + 5,
+        max(1, (screenHeight - headerHeight) / textLineHeight - 3));
   } else if (photoPage) {
     // Retain the full-screen photo in the existing PSRAM framebuffer.
     // Only a new page/file (or a bounded retry) reads flash again.
@@ -1564,6 +1579,19 @@ void setFocusStatus(bool active, const String &status) {
   if (!modelMutex || xSemaphoreTake(modelMutex, pdMS_TO_TICKS(30)) != pdTRUE) return;
   if (model.focusActive != active || model.focusStatus != status) {
     model.focusActive = active; model.focusStatus = status; ++model.revision;
+  }
+  xSemaphoreGive(modelMutex);
+}
+
+void setMusicStatus(bool active, const String &title, const String &artist, const String &state,
+                    const String &lyric, const String &nextLyric, uint64_t positionMs, uint64_t durationMs) {
+  if (!modelMutex || xSemaphoreTake(modelMutex, pdMS_TO_TICKS(30)) != pdTRUE) return;
+  if (model.musicActive != active || model.musicTitle != title || model.musicArtist != artist ||
+      model.musicState != state || model.musicLyric != lyric || model.musicNextLyric != nextLyric ||
+      model.musicPositionMs / 1000 != positionMs / 1000) {
+    model.musicActive = active; model.musicTitle = title; model.musicArtist = artist; model.musicState = state;
+    model.musicLyric = lyric; model.musicNextLyric = nextLyric; model.musicPositionMs = positionMs;
+    model.musicDurationMs = durationMs; ++model.revision;
   }
   xSemaphoreGive(modelMutex);
 }

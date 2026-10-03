@@ -22,6 +22,8 @@ from .personal_profile import PersonalProfileConflict, PersonalProfileSnapshot
 from .service import VoiceService
 from .store import Store
 from .usage_report import compact_device_usage, usage_report
+from .music_library import MusicLibrary
+from .music_routes import install_music_api
 
 DEVICE_ID_PATTERN = re.compile(r"^[A-Za-z0-9_.:-]{3,64}$")
 DEVICE_CONTEXT_HEADER_MAX_BYTES = 512
@@ -112,6 +114,7 @@ def create_app(settings: Settings | None = None, service: VoiceService | None = 
     app.state.runtime_config = runtime_config
     app.state.store = store
     app.state.alarm_music_repository = AlarmMusicRepository(base_settings.data_dir / "alarm-music")
+    app.state.music_library = MusicLibrary(base_settings.data_dir / "music-library")
     app.state.voice_service = service
     app.state.firmware_repository = FirmwareRepository(
         base_settings.data_dir / "firmware",
@@ -443,6 +446,7 @@ def create_app(settings: Settings | None = None, service: VoiceService | None = 
             raise HTTPException(status.HTTP_502_BAD_GATEWAY, str(exc)) from exc
         return {"translation": translated, "provider": provider, "target_language": payload.target_language}
 
+    install_music_api(app, authenticated_device)
     install_admin_routes(app, base_settings, vault, AdminSessions())
     return app
 

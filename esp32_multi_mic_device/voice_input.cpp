@@ -17,6 +17,7 @@
 #include "voice_capture_settings.h"
 #include "ambient_noise.h"
 #include "multi_mic_selector.h"
+#include "music_resampler.h"
 
 namespace VoiceInput {
 namespace {
@@ -48,6 +49,8 @@ uint16_t probeRms[3] = {}, probePeak[3] = {};
 uint8_t probeHealthyMask = 0;
 bool storageMounted = false;
 bool initialized = false;
+uint32_t currentSampleRate = SAMPLE_RATE;
+MusicStream::Decimator musicDecimator;
 fs::FS *activeStorage = nullptr;
 const char *activeStorageName = "unmounted";
 uint8_t fixedPlaybackVolume = DEFAULT_PLAYBACK_VOLUME_PERCENT;
@@ -89,7 +92,7 @@ class MicrophoneLock {
 bool startThirdMicrophone() {
   thirdMicrophoneBus.setPins(HardwarePins::MIC3_BCLK, HardwarePins::MIC3_WS,
                             -1, HardwarePins::MIC3_DATA);
-  if (!thirdMicrophoneBus.begin(I2S_MODE_STD, SAMPLE_RATE,
+  if (!thirdMicrophoneBus.begin(I2S_MODE_STD, currentSampleRate,
                                 I2S_DATA_BIT_WIDTH_32BIT, I2S_SLOT_MODE_STEREO)) {
     Serial.printf("[麦克风] MIC3 I2S1 初始化失败: %d\n", thirdMicrophoneBus.lastError());
     thirdMicrophoneBus.end();
@@ -134,7 +137,7 @@ bool readMicrophoneBlock(Stereo32 *raw, size_t frames, uint32_t timeoutMs,
   probeStatsValid = false;
   const uint8_t previousMic = microphoneSelector.selected();
   const uint8_t selected = microphoneSelector.update(
-      raw, thirdMicrophoneInitialized ? third : nullptr, frames, allowSwitch);
+      raw, thirdMicrophoneInitialized ? third : nullptr, frames, allowSwitch, currentSampleRate);
   if (selected != previousMic) {
     ambientNoise.reset();
     ambientState.store(0, std::memory_order_relaxed);
@@ -208,7 +211,7 @@ size_t writeMono16(const int16_t *mono, size_t samples, uint16_t gainQ15 = 32768
     }
     const size_t wanted = count * sizeof(Stereo32);
     const size_t written = audioBus.write(frames, wanted);
-    if (written != wanted) return totalFrames;
+    if (written != wanted) return totalFrames + min(written / sizeof(Stereo32), count);
     totalFrames += count;
   }
   return totalFrames;
@@ -216,7 +219,7 @@ size_t writeMono16(const int16_t *mono, size_t samples, uint16_t gainQ15 = 32768
 
 void writeSilence(uint16_t durationMs) {
   int16_t silence[FRAMES_PER_CHUNK] = {};
-  size_t remaining = (static_cast<size_t>(SAMPLE_RATE) * durationMs) / 1000;
+  size_t remaining = (static_cast<size_t>(currentSampleRate) * durationMs) / 1000;
   while (remaining > 0) {
     const size_t count = min(remaining, static_cast<size_t>(FRAMES_PER_CHUNK));
     writeMono16(silence, count);
@@ -226,7 +229,7 @@ void writeSilence(uint16_t durationMs) {
 
 bool discardMicrophoneUnlocked(uint32_t durationMs) {
   Stereo32 raw[FRAMES_PER_CHUNK];
-  size_t remaining = static_cast<size_t>(SAMPLE_RATE) * durationMs / 1000U;
+  size_t remaining = static_cast<size_t>(currentSampleRate) * durationMs / 1000U;
   while (remaining > 0) {
     const size_t count = min(remaining, FRAMES_PER_CHUNK);
     if (!readMicrophoneBlock(raw, count, 100, false)) return false;
@@ -235,6 +238,7 @@ bool discardMicrophoneUnlocked(uint32_t durationMs) {
   wakePreviousInput = 0.0f;
   wakePreviousOutput = 0.0f;
   // Keep the wake listener's selected channel through the prompt/RX drain.
+  musicDecimator.reset();
   microphoneSelector.reset(true);
   wakeFilterMic = microphoneSelector.selected();
   return true;
@@ -323,7 +327,8 @@ bool begin() {
   analogSetPinAttenuation(PIN_VOLUME_POT, ADC_11db);
 
   audioBus.setPins(PIN_I2S_BCLK, PIN_I2S_WS, PIN_AMP_DATA, PIN_MIC_DATA);
-  if (!audioBus.begin(I2S_MODE_STD, SAMPLE_RATE, I2S_DATA_BIT_WIDTH_32BIT, I2S_SLOT_MODE_STEREO)) {
+  currentSampleRate = SAMPLE_RATE;
+  if (!audioBus.begin(I2S_MODE_STD, currentSampleRate, I2S_DATA_BIT_WIDTH_32BIT, I2S_SLOT_MODE_STEREO)) {
     Serial.printf("[语音] I2S 初始化失败: %d\n", audioBus.lastError());
     audioBus.end();
     return false;
@@ -468,6 +473,7 @@ bool recordPcmInternal(const char *path, uint32_t minimumMs, uint32_t maximumMs,
   clearRecording();
   stats = AudioStats();
   const uint32_t preparationStarted = millis();
+  if (currentSampleRate != SAMPLE_RATE) { stats.error = "音乐尚未暂停，不能开始录音"; return false; }
   if (!begin()) {
     stats.error = "音频或存储初始化失败";
     return false;
@@ -716,17 +722,20 @@ bool readMicrophoneMono16(int16_t *samples, size_t sampleCount,
   Stereo32 raw[128];
   size_t completed = 0;
   while (completed < sampleCount) {
-    const size_t wantedFrames = min(sampleCount - completed,
-                                    static_cast<size_t>(128));
+    const bool resample = currentSampleRate == 48000;
+    const size_t wantedFrames = min((sampleCount - completed) * (resample ? 3 : 1),
+                                    static_cast<size_t>(resample ? 126 : 128));
     if (!readMicrophoneBlock(raw, wantedFrames, timeoutMs)) return false;
     const size_t frames = wantedFrames;
     if (wakeFilterMic != microphoneSelector.selected()) {
       wakePreviousInput = wakePreviousOutput = 0.0f;
+      musicDecimator.reset();
       wakeFilterMic = microphoneSelector.selected();
     }
     double ambientSquares = 0;
     for (size_t i = 0; i < frames; ++i) {
-      const float input = static_cast<float>(raw[i].left >> 16);
+      float input = static_cast<float>(raw[i].left >> 16);
+      if (resample && !musicDecimator.push(input, input)) continue;
       const float noiseFiltered = input - ambientPreviousInput + CAPTURE_HIGH_PASS_ALPHA * ambientPreviousOutput;
       ambientPreviousInput = input;
       ambientPreviousOutput = noiseFiltered;
@@ -735,16 +744,15 @@ bool readMicrophoneMono16(int16_t *samples, size_t sampleCount,
           input - wakePreviousInput + HIGH_PASS_ALPHA * wakePreviousOutput;
       wakePreviousInput = input;
       wakePreviousOutput = filtered;
-      samples[completed + i] =
+      samples[completed++] =
           saturate16(static_cast<int32_t>(filtered * MIC_GAIN));
     }
-    if (ambientTracking && static_cast<int32_t>(millis() - ambientIgnoreUntil) >= 0 && frames) {
+    if (!resample && ambientTracking && static_cast<int32_t>(millis() - ambientIgnoreUntil) >= 0 && frames) {
       ambientNoise.observe(sqrt(ambientSquares / frames));
       ambientUpdatedAt = millis();
       ambientState.store(ambientNoise.ready() ? 0x80000000U | static_cast<uint32_t>(ambientNoise.floor() * 256) : 0,
                          std::memory_order_relaxed);
     }
-    completed += frames;
   }
   return true;
 }
@@ -767,13 +775,46 @@ uint32_t ambientSpeechThreshold() {
   return ambientNoiseReady() ? max(fixed, static_cast<uint32_t>(ambientNoiseFloor() * config.gain * 2.5f + 20)) : fixed;
 }
 bool playAlarmChunk(const int16_t *samples, size_t count) {
-  if (!samples || !count || count > 1600 || !initialized) return false;
+  if (!samples || !count || count > 1600 || !initialized || currentSampleRate != SAMPLE_RATE) return false;
   ambientIgnoreUntil = millis() + 350;
   muteAmplifier(false);
   return writeMono16(samples, count, playbackGainQ15(min(effectivePlaybackVolume(), uint8_t{45}))) == count;
 }
 
+uint32_t hardwareSampleRate() { return currentSampleRate; }
+bool setMusicRate(bool enabled) {
+  const uint32_t wanted = enabled ? 48000 : SAMPLE_RATE;
+  if (!initialized) return !enabled && begin();
+  MicrophoneLock lock(pdMS_TO_TICKS(600));
+  if (!lock.locked()) return false;
+  if (wanted == currentSampleRate) return true;
+  // Feed bounded silence while the amp is still enabled. This drains accepted
+  // song frames from TX DMA before end() discards that queue on a rate change.
+  if (currentSampleRate == 48000) writeSilence(80);
+  muteAmplifier(true); audioBus.end();
+  if (thirdMicrophoneInitialized) { thirdMicrophoneBus.end(); thirdMicrophoneInitialized = false; }
+  currentSampleRate = wanted;
+  bool ok = audioBus.begin(I2S_MODE_STD, wanted, I2S_DATA_BIT_WIDTH_32BIT, I2S_SLOT_MODE_STEREO);
+  if (ok && (microphoneSelector.mask() & 4U)) ok = startThirdMicrophone();
+  if (!ok) {
+    audioBus.end(); if (thirdMicrophoneInitialized) thirdMicrophoneBus.end(); thirdMicrophoneInitialized = false;
+    currentSampleRate = SAMPLE_RATE;
+    initialized = audioBus.begin(I2S_MODE_STD, SAMPLE_RATE, I2S_DATA_BIT_WIDTH_32BIT, I2S_SLOT_MODE_STEREO);
+    if (initialized && (microphoneSelector.mask() & 4U)) initialized = startThirdMicrophone();
+  }
+  musicDecimator.reset(); wakePreviousInput = wakePreviousOutput = 0;
+  ambientNoise.reset(); ambientState.store(0, std::memory_order_relaxed); ambientUpdatedAt = 0;
+  ambientPreviousInput = ambientPreviousOutput = 0; ambientIgnoreUntil = millis() + 1000;
+  return ok;
+}
+size_t playMusicChunk(const int16_t *samples, size_t count) {
+  if (!initialized || currentSampleRate != 48000 || !samples || !count || count > 480) return 0;
+  ambientIgnoreUntil = millis() + 350; muteAmplifier(false);
+  return writeMono16(samples, count, playbackGainQ15(effectivePlaybackVolume()));
+}
+
 bool playPcmFile(const char *path) {
+  if (currentSampleRate != SAMPLE_RATE) return false;
   if (!begin()) return false;
   File file = activeStorage->open(path, FILE_READ);
   if (!file) {
