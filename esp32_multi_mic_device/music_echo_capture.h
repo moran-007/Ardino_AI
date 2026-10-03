@@ -16,6 +16,9 @@ struct Diagnostics {
 bool begin(i2s_chan_handle_t tx, i2s_chan_handle_t rx, i2s_chan_handle_t third, uint8_t installedMask = 1);
 // Called only after all I2S channels have been deleted and the wake task paused.
 void end();
+// Wake resumption first drains old hardware RX; then discard this paired queue
+// and reset diagnostics before measuring the new listening interval.
+void discardPending();
 void setMuted(bool muted);
 bool active();
 bool readNative(NativeFrame *frames, size_t count, uint32_t timeoutMs);

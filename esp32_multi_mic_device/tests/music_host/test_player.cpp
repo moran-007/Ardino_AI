@@ -85,7 +85,7 @@ int main() { try {
   require(!FullMusic::request("/music", "GET", "", metadata, metadataCode) && metadataCode == 503 &&
       FakeNetwork::requests == requestCount && !FullMusic::networkHolds,
       "fragmented internal heap allowed another TLS handshake");
-  fakeLargestInternal = 32768; FullMusic::workerClosed = false;
+  fakeFreeInternal = 45000; fakeLargestInternal = 32768; FullMusic::workerClosed = false;
   require(FullMusic::request("/music", "GET", "", metadata, metadataCode) && !FullMusic::networkHolds &&
       FullMusic::intent.holds == 0 && FullMusic::intent.playing,
       "RAM-safe metadata connection cancelled the ongoing music stream");

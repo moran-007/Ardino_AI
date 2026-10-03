@@ -65,6 +65,11 @@ int main() {
   end();
   CHECK(begin(tx,rx,third,5)); fill(1500); emit(1,speaker); emit(3,thirdMic); emit(2,microphone); CHECK(readNative(out,240,1));
   for(int i=0;i<240;++i) { CHECK(out[i].mic[0]==100+i && out[i].mic[1]==0 && out[i].mic[2]==300+i); CHECK(out[i].reference==1500+i); }
+  for(int i=0;i<13;++i) { emit(1,speaker); emit(2,microphone); }
+  CHECK(diagnostics().droppedFrames==240);
+  discardPending(); CHECK(diagnostics().droppedFrames==0 && diagnostics().frames==0 && active());
+  CHECK(!readNative(out,1,1));
+  emit(1,speaker); emit(2,microphone); CHECK(readNative(out,240,1)); CHECK(out[0].reference==1500);
   end(); CHECK(!begin(tx,rx,nullptr,0)); CHECK(!begin(tx,rx,nullptr,5));
   std::cout << "PASS " << checks << " DMA paired echo capture checks (fake vendor DSP)\n";
 }

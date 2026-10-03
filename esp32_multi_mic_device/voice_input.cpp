@@ -250,6 +250,9 @@ bool discardMicrophoneUnlocked(uint32_t durationMs) {
   wakePreviousOutput = 0.0f;
   // Keep the wake listener's selected channel through the prompt/RX drain.
   musicDecimator.reset();
+  referenceDecimator.reset(); echoFilled = 0; echoOutputAt = 512;
+  echoNearPrevious = echoNearFiltered = echoRefPrevious = echoRefFiltered = 0;
+  MusicEcho::discardPending();
   microphoneSelector.reset(true);
   wakeFilterMic = microphoneSelector.selected();
   return true;

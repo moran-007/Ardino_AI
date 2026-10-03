@@ -119,6 +119,14 @@ void end() {
   if (aec) aec_destroy(aec);
   aec = nullptr; free(queue); queue = nullptr; head = tail = used = 0;
 }
+void discardPending() {
+  portENTER_CRITICAL(&mux);
+  if (running) {
+    head = tail = used = 0;
+    stats = Diagnostics{}; stats.active = true;
+  }
+  portEXIT_CRITICAL(&mux);
+}
 void setMuted(bool value) { portENTER_CRITICAL(&mux); muted = value; portEXIT_CRITICAL(&mux); }
 bool active() { portENTER_CRITICAL(&mux); const bool value = running; portEXIT_CRITICAL(&mux); return value; }
 bool readNative(NativeFrame *frames, size_t count, uint32_t timeoutMs) {

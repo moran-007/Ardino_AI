@@ -350,7 +350,7 @@ bool request(const String &path, const String &method, const String &body, Strin
   // handshakes draining the buffer; fall back to serial TLS under memory pressure.
   bool parallel;
   { Lock lock; parallel = intent.downloadAllowed() && !eof; }
-  parallel = parallel && heap_caps_get_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT) >= 49152 &&
+  parallel = parallel && heap_caps_get_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT) >= 40960 &&
       heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT) >= 12288;
   // A serial catalogue request closes streaming TLS while it uses the connection.
   // Refill first, including on consecutive requests, leaving time for both

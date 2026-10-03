@@ -6,6 +6,7 @@ bool begin(i2s_chan_handle_t, i2s_chan_handle_t, i2s_chan_handle_t, uint8_t) {
   return !FakeEcho::failBegin;
 }
 void end() { FakeEcho::running=false; }
+void discardPending() {}
 void setMuted(bool) {}
 bool active() { return FakeEcho::running; }
 bool readNative(NativeFrame *out, size_t count, uint32_t) {
