@@ -13,6 +13,7 @@ $executable = Join-Path $outputPath 'test_capture.exe'
     '-DARDUINOJSON_ENABLE_ARDUINO_PRINT=0' '-DARDUINOJSON_ENABLE_PROGMEM=0' `
     '-IE:\Users\moran\Documents\Arduino\libraries\ArduinoJson\src' `
     (Join-Path $PSScriptRoot 'test_capture.cpp') (Join-Path $sketchPath 'voice_input.cpp') `
+    (Join-Path $PSScriptRoot 'fake_music_echo.cpp') `
     (Join-Path $sketchPath 'multi_mic_config.cpp') (Join-Path $sketchPath 'music_player.cpp') `
     '-o' $executable
 if ($LASTEXITCODE -ne 0) { throw 'Capture host test compilation failed.' }

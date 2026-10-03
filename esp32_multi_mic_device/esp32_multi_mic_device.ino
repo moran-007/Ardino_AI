@@ -20,6 +20,7 @@ using SecureClient = WiFiClientSecure;
 #include "music_player.h"
 #include "full_music_player.h"
 #include "tls_memory.h"
+#include "music_echo_capture.h"
 #include "web_music_ui.h"
 #include "bounded_audio_download.h"
 #include "conversation_session.h"
@@ -132,7 +133,7 @@ String profileSyncMessage = "等待联网同步";
 String pendingFocusAnnouncement;
 uint32_t lastFocusDisplayMs = 0;
 constexpr char DEFAULT_SERVER_URL[] = "https://voice.bsnlch.xyz";
-constexpr char FIRMWARE_VERSION[] = "2.1.1";
+constexpr char FIRMWARE_VERSION[] = "2.1.2";
 constexpr char OTA_MANIFEST_PATH[] = "/voice-api/v1/firmware/manifest";
 constexpr char AMAP_API_HOST[] = "restapi.amap.com";
 constexpr bool DIALOGUE_TRANSPORT_HTTP = true;
@@ -1034,6 +1035,16 @@ String statusJson(const String &message = "") {
   doc["offline_wake_ready"] = OfflineWake::ready();
   doc["offline_wake_listening"] = OfflineWake::listening();
   doc["offline_wake_active"] = OfflineWake::listenerActive();
+  const auto echo = MusicEcho::diagnostics();
+  doc["music_echo_active"] = echo.active;
+  doc["music_echo_frames"] = echo.frames;
+  doc["music_echo_dropped_frames"] = echo.droppedFrames;
+  doc["music_echo_missing_reference_frames"] = echo.missingReferenceFrames;
+  doc["music_echo_input_rms"] = echo.inputRms;
+  doc["music_echo_reference_rms"] = echo.referenceRms;
+  doc["music_echo_output_rms"] = echo.outputRms;
+  doc["music_echo_max_process_us"] = echo.processMaxUs;
+  doc["music_echo_error"] = MusicEcho::error();
   doc["offline_wake_model"] = settings.offlineWakeModel;
   doc["offline_wake_word"] = OfflineWake::wakeWord();
   doc["offline_wake_error"] = OfflineWake::lastError();

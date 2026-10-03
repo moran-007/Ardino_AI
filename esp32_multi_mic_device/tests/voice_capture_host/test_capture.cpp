@@ -7,6 +7,7 @@
 #include "music_player.h"
 #include "multi_mic_config.h"
 #include "Preferences.h"
+#include "fake_music_echo.h"
 #include <iostream>
 #include <cmath>
 
@@ -507,7 +508,48 @@ void microphoneConfigChecks() {
   failBegin=false;
   std::cout<<"multi-mic: commands, persistence and invalid/NVS failure checks passed\n";
 }
+void musicEchoIntegrationChecks() {
+  reset(); FakeEcho::enabled=true; FakeEcho::nativeFrames=FakeEcho::processCalls=0;
+  FakeEcho::source=[](size_t n) {
+    const int16_t ref=int16_t(4000*std::sin(n*2*PI*3000/48000));
+    return MusicEcho::NativeFrame{{int16_t(ref/4),0,0},ref};
+  };
+  require(VoiceInput::begin() && VoiceInput::setMusicRate(true),"echo music setup failed");
+  int16_t mono[512];
+  require(VoiceInput::readMicrophoneMono16(mono,320),"custom wake echo frame read failed");
+  require(FakeEcho::nativeFrames==1536 && FakeEcho::processCalls==1,
+      "echo did not pair 48k input into one complete 16k DSP frame");
+  require(VoiceInput::readMicrophoneMono16(mono+320,192),"remaining echo output read failed");
+  require(FakeEcho::nativeFrames==1536 && FakeEcho::processCalls==1,
+      "partial wake frame lost buffered DSP output");
+  for (auto value:mono) require(std::abs(value)<20,"speaker reference was not removed before wake gain");
+  FakeEcho::failRead=true;
+  require(!VoiceInput::readMicrophoneMono16(mono,512),"failed paired RX supplied stale wake audio");
+  FakeEcho::failRead=false;
+  require(VoiceInput::setMusicRate(false) && !MusicEcho::active(),"echo survived 16k foreground handover");
+  require(VoiceInput::configureMicrophones(7,3),"echo MIC3 configuration failed");
+  FakeEcho::nativeFrames=0;
+  FakeEcho::source=[](size_t n) {
+    const int16_t ref=int16_t(4000*std::sin(n*2*PI*3000/48000));
+    const int16_t speech=int16_t(1000*std::sin(n*2*PI*1000/48000));
+    return MusicEcho::NativeFrame{{0,0,int16_t(speech+ref/4)},ref};
+  };
+  require(VoiceInput::setMusicRate(true),"echo MIC3 music setup failed");
+  double energy=0;
+  for(int b=0;b<4;++b) {
+    require(VoiceInput::readMicrophoneMono16(mono,512),"MIC3 echo wake input failed");
+    if(b) for(auto v:mono) energy+=double(v)*v;
+  }
+  require(energy/(512*3)>1000000,"echo path discarded MIC3 near-end speech");
+  require(VoiceInput::selectedMicrophone()==3,"echo path bypassed fixed microphone selection");
+  require(VoiceInput::setMusicRate(false),"echo final clock restore failed");
+  FakeEcho::failBegin=true;
+  require(!VoiceInput::setMusicRate(true) && VoiceInput::hardwareSampleRate()==16000 && !MusicEcho::active(),
+      "failed echo initialization left unsafe music clock");
+  FakeEcho::failBegin=false; FakeEcho::enabled=false;
+  std::cout<<"music echo: paired FIR, pre-gain cancellation, variable wake frames, MIC3 and failure rollback passed\n";
 }
-int main(){try{ambientChecks();noSpeechChecks();audioChecks();storageTimingChecks();errorAndControlChecks();conversationChecks();manualRecordingChecks();memoryRecordingChecks();multiMicrophoneChecks();microphoneConfigChecks();musicHardwareChecks();
+}
+int main(){try{ambientChecks();noSpeechChecks();audioChecks();storageTimingChecks();errorAndControlChecks();conversationChecks();manualRecordingChecks();memoryRecordingChecks();multiMicrophoneChecks();microphoneConfigChecks();musicHardwareChecks();musicEchoIntegrationChecks();
 std::cout<<"PASS: "<<checks<<" production capture/session checks (NS/VAD hardware faked)\n";
 return 0;}catch(const std::exception &error){std::cerr<<"FAIL after "<<checks<<": "<<error.what()<<'\n';return 1;}}

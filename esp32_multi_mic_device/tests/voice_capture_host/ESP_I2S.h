@@ -57,6 +57,7 @@ class I2SClass {
   }
   int lastError() const { return -1; }
   i2s_chan_handle_t rxChan() { return reinterpret_cast<void *>(port_ + 1); }
+  i2s_chan_handle_t txChan() { return reinterpret_cast<void *>(port_ + 3); }
   size_t write(const void *, size_t length) {
     if (FakeHardware::failI2sWrite) return 0;
     length = min(length, FakeHardware::maxWriteBytes);

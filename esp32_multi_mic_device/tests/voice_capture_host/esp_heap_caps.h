@@ -8,3 +8,6 @@ inline void *heap_caps_malloc(size_t bytes, unsigned caps) {
   if (FakeHardware::failCaptureAllocation) return nullptr;
   return std::malloc(bytes);
 }
+inline void *heap_caps_aligned_alloc(size_t, size_t bytes, unsigned caps) {
+  return heap_caps_malloc(bytes,caps);
+}

@@ -230,7 +230,7 @@ bool begin(bool enabledValue, const String &modelIdValue) {
   requestedEnabled = enabledValue;
   suspended = !enabled();
   pauseAcknowledged = true;
-  if (xTaskCreatePinnedToCore(listenerTask, "Offline Wake", 6144, nullptr, 3,
+  if (xTaskCreatePinnedToCore(listenerTask, "Offline Wake", 8192, nullptr, 3,
                               &listenerTaskHandle, 0) != pdPASS) {
     listenerTaskHandle = nullptr;
     errorText = "无法创建离线唤醒任务";

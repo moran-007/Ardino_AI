@@ -18,6 +18,7 @@
 #include "ambient_noise.h"
 #include "multi_mic_selector.h"
 #include "music_resampler.h"
+#include "music_echo_capture.h"
 
 namespace VoiceInput {
 namespace {
@@ -51,6 +52,16 @@ bool storageMounted = false;
 bool initialized = false;
 uint32_t currentSampleRate = SAMPLE_RATE;
 MusicStream::Decimator musicDecimator;
+MusicStream::Decimator referenceDecimator;
+struct EchoWork {
+  alignas(16) int16_t near[512], reference[512], output[512];
+  MusicEcho::NativeFrame native[126];
+  Stereo32 primary[126], third[126];
+};
+EchoWork *echoWork = nullptr;  // Task-only scratch lives in PSRAM, never in ISR.
+size_t echoFilled = 0, echoOutputAt = 512;
+float echoNearPrevious = 0, echoNearFiltered = 0;
+float echoRefPrevious = 0, echoRefFiltered = 0;
 fs::FS *activeStorage = nullptr;
 const char *activeStorageName = "unmounted";
 uint8_t fixedPlaybackVolume = DEFAULT_PLAYBACK_VOLUME_PERCENT;
@@ -306,6 +317,7 @@ bool mountStorage() {
 }
 
 void muteAmplifier(bool mute) {
+  MusicEcho::setMuted(mute);
   digitalWrite(PIN_AMP_SD, mute ? LOW : HIGH);
 }
 
@@ -455,6 +467,8 @@ bool releaseAudioHardware() {
     thirdMicrophoneInitialized = false;
   }
   ok = audioBus.end() && ok;
+  MusicEcho::end();
+  free(echoWork); echoWork = nullptr;
   initialized = false;
   return ok;
 }
@@ -719,6 +733,56 @@ bool readMicrophoneMono16(int16_t *samples, size_t sampleCount,
   MicrophoneLock lock(pdMS_TO_TICKS(timeoutMs + 20U));
   if (!lock.locked() || !initialized) return false;
 
+  if (currentSampleRate == 48000 && MusicEcho::active() && echoWork) {
+    auto &echoNear = echoWork->near;
+    auto &echoReference = echoWork->reference;
+    auto &echoOutput = echoWork->output;
+    size_t completed = 0;
+    while (completed < sampleCount) {
+      if (echoOutputAt < 512) {
+        const float input = echoOutput[echoOutputAt++];
+        const float filtered = input - wakePreviousInput + HIGH_PASS_ALPHA * wakePreviousOutput;
+        wakePreviousInput = input; wakePreviousOutput = filtered;
+        samples[completed++] = saturate16(static_cast<int32_t>(filtered * MIC_GAIN));
+        continue;
+      }
+      auto &native = echoWork->native;
+      auto &primary = echoWork->primary;
+      auto &third = echoWork->third;
+      const size_t count = min((512 - echoFilled) * 3, size_t{126});
+      if (!MusicEcho::readNative(native, count, timeoutMs)) return false;
+      for (size_t i = 0; i < count; ++i) {
+        primary[i] = {int32_t(native[i].mic[0]) * 65536, int32_t(native[i].mic[1]) * 65536};
+        third[i] = {int32_t(native[i].mic[2]) * 65536, 0};
+      }
+      const uint8_t selected = microphoneSelector.update(primary,
+          thirdMicrophoneInitialized ? third : nullptr, count, true, 48000);
+      if (wakeFilterMic != selected) {
+        musicDecimator.reset(); referenceDecimator.reset(); echoFilled = 0;
+        wakePreviousInput = wakePreviousOutput = 0;
+        echoNearPrevious = echoNearFiltered = echoRefPrevious = echoRefFiltered = 0;
+        wakeFilterMic = selected;
+      }
+      for (size_t i = 0; i < count; ++i) {
+        float near = 0, ref = 0;
+        const bool nearReady = musicDecimator.push(native[i].mic[selected - 1], near);
+        const bool refReady = referenceDecimator.push(native[i].reference, ref);
+        if (!nearReady || !refReady) continue;
+        const float nearFiltered = near - echoNearPrevious + HIGH_PASS_ALPHA * echoNearFiltered;
+        const float refFiltered = ref - echoRefPrevious + HIGH_PASS_ALPHA * echoRefFiltered;
+        echoNearPrevious = near; echoNearFiltered = nearFiltered;
+        echoRefPrevious = ref; echoRefFiltered = refFiltered;
+        echoNear[echoFilled] = saturate16(static_cast<int32_t>(nearFiltered));
+        echoReference[echoFilled++] = saturate16(static_cast<int32_t>(refFiltered));
+      }
+      if (echoFilled == 512) {
+        MusicEcho::process(echoNear, echoReference, echoOutput);
+        echoFilled = 0; echoOutputAt = 0;
+      }
+    }
+    return true;
+  }
+
   Stereo32 raw[128];
   size_t completed = 0;
   while (completed < sampleCount) {
@@ -793,16 +857,27 @@ bool setMusicRate(bool enabled) {
   if (currentSampleRate == 48000) writeSilence(80);
   muteAmplifier(true); audioBus.end();
   if (thirdMicrophoneInitialized) { thirdMicrophoneBus.end(); thirdMicrophoneInitialized = false; }
+  MusicEcho::end();
+  free(echoWork); echoWork = nullptr;
   currentSampleRate = wanted;
   bool ok = audioBus.begin(I2S_MODE_STD, wanted, I2S_DATA_BIT_WIDTH_32BIT, I2S_SLOT_MODE_STEREO);
   if (ok && (microphoneSelector.mask() & 4U)) ok = startThirdMicrophone();
+  if (ok && enabled) {
+    echoWork = static_cast<EchoWork *>(heap_caps_aligned_alloc(16, sizeof(EchoWork), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
+    ok = echoWork && MusicEcho::begin(audioBus.txChan(), audioBus.rxChan(),
+        thirdMicrophoneInitialized ? thirdMicrophoneBus.rxChan() : nullptr, microphoneSelector.mask());
+  }
   if (!ok) {
     audioBus.end(); if (thirdMicrophoneInitialized) thirdMicrophoneBus.end(); thirdMicrophoneInitialized = false;
+    MusicEcho::end();
+    free(echoWork); echoWork = nullptr;
     currentSampleRate = SAMPLE_RATE;
     initialized = audioBus.begin(I2S_MODE_STD, SAMPLE_RATE, I2S_DATA_BIT_WIDTH_32BIT, I2S_SLOT_MODE_STEREO);
     if (initialized && (microphoneSelector.mask() & 4U)) initialized = startThirdMicrophone();
   }
   musicDecimator.reset(); wakePreviousInput = wakePreviousOutput = 0;
+  referenceDecimator.reset(); echoFilled = 0; echoOutputAt = 512;
+  echoNearPrevious = echoNearFiltered = echoRefPrevious = echoRefFiltered = 0;
   ambientNoise.reset(); ambientState.store(0, std::memory_order_relaxed); ambientUpdatedAt = 0;
   ambientPreviousInput = ambientPreviousOutput = 0; ambientIgnoreUntil = millis() + 1000;
   return ok;
